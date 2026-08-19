@@ -26,7 +26,6 @@ Think of it less as a chatbot and more as a kernel: the Planner is the scheduler
 ---
 
 ## Why this exists
-
 Enterprise work is mostly: take a vague ask, figure out what it actually requires, pull data and context from a dozen systems, reconcile contradictions, produce something a human can sign off on. That loop — decompose, delegate, reconcile, synthesize — is a systems problem, not a prompting problem. This project treats it as one: a real scheduler, a real message protocol between workers, a real memory hierarchy, and real failure handling, all demonstrated on a non-trivial domain (audit/compliance-style workflows) rather than a toy demo.
 
 ---
