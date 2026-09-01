@@ -1,228 +1,251 @@
-# Enterprise AI OS
+<h1 align="center">Enterprise AI-OS</h1>
 
-A multi-agent operating layer for enterprises. Users hand it a high-level, ambiguous goal in natural language — *"Prepare quarterly audit review," "Investigate why churn spiked in APAC," "Onboard this new vendor and check compliance"* — and the system plans, coordinates, and executes across a fleet of specialized agents, producing a reviewable, evidence-backed result.
+<p align="center">
+  <b>A LangGraph-based multi-agent orchestration platform.</b><br/>
+  Give it a fuzzy enterprise goal. It plans a task graph, runs agents in parallel,<br/>
+  reconciles what they disagree on, survives tools being down, and stops for a human<br/>
+  before anything becomes durable knowledge.
+</p>
 
-Think of it less as a chatbot and more as a kernel: the Planner is the scheduler, the Coordinator is the process manager, agents are processes, MCP is the syscall interface to the outside world, and the Memory Layer is persistent + working storage.
+<p align="center">
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white">
+  <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-1.2-1c3c3c">
+  <img alt="Claude" src="https://img.shields.io/badge/Claude-Opus%205-d97757">
+  <img alt="tests" src="https://img.shields.io/badge/tests-58%20passing-3fb950">
+  <img alt="offline demo" src="https://img.shields.io/badge/demo-runs%20offline-8957e5">
+</p>
 
----
+<p align="center"><img src="docs/assets/trace.svg" alt="A real run trace: planning, parallel dispatch, retry, conflict reconciliation, degradation, human sign-off, memory promotion" width="100%"></p>
 
-## Table of contents
-
-1. [Why this exists](#why-this-exists)
-2. [Architecture overview](#architecture-overview)
-3. [Core components](#core-components)
-4. [Agent catalogue](#agent-catalogue)
-5. [Memory layer](#memory-layer)
-6. [Protocols: A2A and MCP](#protocols-a2a-and-mcp)
-7. [State management](#state-management)
-8. [Failure handling](#failure-handling)
-9. [Observability](#observability)
-10. [Security model](#security-model)
-11. [Tech stack](#tech-stack)
-12. [Example run, end to end](#example-run-end-to-end)
-13. [Repository structure](#repository-structure)
-14. [Roadmap](#roadmap)
+<p align="center"><sub>An actual run, not a mockup — generated from <code>.aios/traces/&lt;run_id&gt;.jsonl</code> by <a href="tools/trace_to_svg.py"><code>tools/trace_to_svg.py</code></a>.</sub></p>
 
 ---
 
-## Why this exists
-Enterprise work is mostly: take a vague ask, figure out what it actually requires, pull data and context from a dozen systems, reconcile contradictions, produce something a human can sign off on. That loop — decompose, delegate, reconcile, synthesize — is a systems problem, not a prompting problem. This project treats it as one: a real scheduler, a real message protocol between workers, a real memory hierarchy, and real failure handling, all demonstrated on a non-trivial domain (audit/compliance-style workflows) rather than a toy demo.
+## What just happened in that trace
 
----
+Seven lines in there are the whole project. In order:
 
-## Architecture overview
-
-```
-┌───────────────────────────────────────────────────────────────────────┐
-│                              User Interface                           │
-│         goal input · task-graph view · live run trace · review/signoff│
-└───────────────────────────────────┬───────────────────────────────────┘
-                                    │
-┌───────────────────────────────────▼───────────────────────────────────┐
-│                          Orchestration Layer                          │
-│  ┌────────────┐    ┌──────────────────┐     ┌───────────────────────┐ │
-│  │  Planner   │──▶│  Task Graph /     │──▶ │     Coordinator       │ │
-│  │  Agent     │    │  Run State       │     │  dispatch · retry ·   │ │
-│  │ (decompose,│    │  (LangGraph nodes│     │  merge · conflict-    │ │
-│  │  replan)   │    │  + checkpoints)  │     │  resolution · escalate│ │
-│  └────────────┘    └──────────────────┘     └───────────┬───────────┘ │
-└─────────────────────────────────────────────────────────┼─────────────┘
-                                                          │  A2A envelopes
-        ┌────────────┬────────────┬────────────┬──────────┐
-        ▼            ▼            ▼            ▼          ▼  
- ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐
- │ Research  │ │   Data    │ │  Coding   │ │ Reporting │ │  (future  │
- │  Agent    │ │  Agent    │ │  Agent    │ │  Agent    │ │  agents)  │
- └─────┬─────┘ └─────┬─────┘ └─────┬─────┘ └─────┬─────┘ └───────────┘
-       │             │             │             │
-       └─────────────┴──────┬──────┴─────────────┘
-                            ▼
-                  ┌────────────────────────┐
-                  │      MCP Gateway       │
-                  │  DBs · APIs · files ·  │
-                  │  code sandbox · web    │
-                  └───────────┬────────────┘
-                              ▼
-                  ┌────────────────────────┐
-                  │      Memory Layer      │
-                  │  episodic (per-run) +  │
-                  │  semantic (durable)    │
-                  └────────────────────────┘
-```
-
-Agents never call each other directly — every inter-agent interaction is a Coordinator-mediated A2A message. This keeps a single choke point for tracing, retries, and conflict resolution instead of an N×N mesh of ad-hoc agent calls.
-
----
-
-## Core components
-
-### Planner Agent
-Takes the raw goal plus relevant durable-memory context and produces a **task DAG**: nodes with `task_id`, `description`, `assigned_agent_type`, `dependencies`, `success_criteria`, `priority`. The Planner is re-invoked (not just retried) whenever a downstream failure or contradiction invalidates one of its assumptions — replanning is a first-class operation, not an edge case.
-
-### Coordinator
-The scheduler. Walks the DAG, dispatches ready tasks, and owns:
-- **Retry policy** — bounded attempts with backoff, per task type.
-- **Conflict resolution** — when two agents disagree (e.g. Research and Data return different figures for the same fact), the Coordinator routes to a resolution sub-task (re-query with tighter constraints, or escalate to a human) instead of silently picking a winner.
-- **Partial completion** — non-critical failed tasks are marked `degraded`; the run continues and the gap is annotated in the final output rather than blocking everything.
-- **Escalation** — tasks tagged `requires_human_signoff` pause their branch of the graph and surface in the UI with full context.
-
-### Task Graph / Run State
-A LangGraph state graph. Every node transition is checkpointed, so a run can be paused (e.g. waiting on a human) and resumed exactly where it left off, and a replan can graft new nodes onto a live graph without losing prior progress.
-
----
-
-## Agent catalogue
-
-| Agent | Responsibility | Typical tools (via MCP) |
+| # | Trace line | What it proves |
 |---|---|---|
-| **Planner** | Goal decomposition, replanning, dependency ordering | Durable memory read |
-| **Research Agent** | External/internal document and web retrieval, precedent lookup | Web search, document stores, internal wikis |
-| **Data Agent** | Structured queries, ETL, joining across systems | SQL/warehouse APIs, internal REST APIs |
-| **Coding Agent** | Ad hoc analysis scripts, transformations, calculations | Sandboxed code execution |
-| **Reporting Agent** | Synthesizes agent outputs into a structured, evidenced final artifact | Document/template rendering |
+| 1 | `plan` — 6 tasks | The goal was decomposed into a **validated DAG**. Cycles, unknown dependencies and unknown agents are rejected and the planner is re-prompted with the reason. |
+| 2 | `dispatch: t3, t4, t5` | **Three agents running at once.** LangGraph `Send` fan-out, one branch per ready task, merged back through a state reducer — not a for-loop. |
+| 3 | `tool_error … 503` → `task_retry` | The ledger service is down. The **agent does not decide** what to do about it: it reports, and the coordinator applies bounded retry with backoff. It succeeds on attempt 3. |
+| 4 | `conflict_detected` | The warehouse says Northwind's unapproved exposure is **55,700 USD**; the prior-quarter memo says **82,600 USD**. Nothing silently picks a winner. |
+| 5 | `re-querying t3_vendor_precedent` → `conflict_resolved` | The **least confident claimant** is re-queried with the contradiction as context. It finds the memo figure is FY-to-date, not single-quarter. Resolved, reason recorded. |
+| 6 | `task_degraded` | The benchmark provider never came back. Non-critical, so the run **continues degraded** rather than failing — and the gap is named in the report. |
+| 7 | `signoff_requested` → `signoff_recorded` → `memory_promote` | The graph **stops at a checkpoint**, not a prompt loop. After approval, four findings are promoted to durable memory with provenance back to this run. |
 
-Each agent has a **typed contract**, not free-form text I/O: inputs and outputs are schemas the Coordinator can validate programmatically. Every output carries `result`, `confidence`, and `evidence` fields, so conflict detection and synthesis aren't guessing about what an agent actually found versus assumed.
-
-**Future agents** (roadmap, see below): Compliance Agent (policy-rule checking), Notification Agent (stakeholder updates), Finance Agent (numeric reconciliation against ledgers).
-
----
-
-## Memory layer
-
-Two tiers:
-
-**Episodic (run-scoped) memory** — the live task graph, intermediate agent outputs, checkpoints. Keyed by run ID. This is what makes pause/resume and replanning possible without re-deriving everything from scratch.
-
-**Semantic (durable) memory** — knowledge that persists across runs: prior findings, resolved conflicts, policy interpretations, vendor histories. Hybrid store: a vector index for chunk-level precedent retrieval, and a lightweight knowledge graph for entity/relationship recall (e.g. "vendor X ↔ prior late-invoice flag ↔ Q1 audit run").
-
-**Promotion policy** — not everything episodic becomes durable. Promotion happens on: human-approved report sections, agent outputs above a confidence threshold, and explicitly tagged "reusable finding" nodes. Promoted facts carry a provenance pointer back to the run that produced them.
-
-**Invalidation policy** — when a new run's finding contradicts a durable fact, the old fact is superseded (not deleted) — the graph keeps both with a supersedes edge, so audit trails survive.
+Note the sequence numbers run 1 → 74 unbroken across the pause. `signoff_requested` at 68 and `signoff_recorded` at 71 happened in **different processes**: the run was suspended to disk and resumed.
 
 ---
 
-## Protocols: A2A and MCP
+## Try it in 30 seconds
 
-**A2A (agent-to-agent)** — every message between the Coordinator and an agent, or between two agents when explicitly brokered, uses a fixed envelope: `{task_id, sender, recipient, payload, status, confidence, evidence}`. This is the contract that makes retries, conflict detection, and tracing possible — nothing is passed as loose natural language between agents.
-
-**MCP (tool access)** — agents never hold credentials or call external systems directly. All tool/resource access goes through an MCP Gateway that enforces a per-tool `allowed_principal_types` matrix: each agent type declares which tools it may call, and the gateway checks this on every call, not just at connection time. This mirrors a multi-principal MCP security model (human, agent, service token) with principal type resolved at the registry layer, never trusted as caller-supplied input.
-
----
-
-## State management
-
-- LangGraph is the state machine: nodes are agent invocations or control steps (plan, dispatch, merge, resolve-conflict, escalate), edges are dependencies.
-- Checkpointing happens at every node transition, enabling pause/resume, replay for debugging, and safe replanning mid-run.
-- Run state is the single source of truth queried by the UI for the live task-graph view.
-
----
-
-## Failure handling
-
-| Failure | Handling |
-|---|---|
-| Tool call fails (API/DB down) | Bounded retry with backoff; task marked `degraded` after limit |
-| Two agents produce conflicting facts | Routed to conflict-resolution sub-task: re-query or escalate to human |
-| Planner emits an invalid or circular DAG | Validated before dispatch; rejected and reprompted |
-| Coding Agent produces unsafe/broken code | Sandboxed execution, strict timeouts, failed artifacts excluded from final report rather than silently included |
-| Task exceeds time budget | Timeout with partial-result capture, not a silent hang |
-| Human signoff never arrives | TTL on pending tasks; run marked `awaiting_input`, resumable later |
-| Durable memory contradiction | Supersede, don't overwrite — keep both facts with provenance |
-
----
-
-## Observability
-
-Every A2A message and every MCP tool call is traced and keyed by run ID: who called what, with what confidence, what evidence, and what the Coordinator decided when things conflicted or failed. The task-graph UI is a live view over this trace, not a separate logging afterthought. This is deliberately built the same way as a production RAG/agent observability stack: pipeline health, semantic quality of outputs, and reasoning/drift over time are all first-class, queryable dimensions.
-
----
-
-## Security model
-
-- **Principal types**: human user, orchestrator-internal agent, external service/API client — resolved once at the registry layer from a signed token, never taken as caller-supplied input.
-- **Scope enforcement** happens at the MCP Gateway, not inside individual agents.
-- **Per-tool access matrix** (`allowed_principal_types`) — e.g. only the Data Agent may call the finance-ledger tool; only human principals can approve a signoff task.
-- **No agent holds raw credentials.** All secrets live behind the MCP Gateway.
-
----
-
-## Tech stack
-
-| Layer | Technology |
-|---|---|
-| Orchestration / state machine | LangGraph |
-| Inter-agent messaging | A2A protocol |
-| Tool/resource access | MCP (gateway + per-tool principal matrix) |
-| Episodic memory | LangGraph checkpoints, per run ID |
-| Semantic memory | Vector store + knowledge graph (Neo4j-style) |
-| Code execution | Sandboxed interpreter, timeout-bounded |
-| Observability | Structured trace store, queryable by run ID |
-| UI | Task-graph visualization + review/signoff console |
-
----
-
-## Example run, end to end
-
-**Goal:** *"Prepare quarterly audit review."*
-
-1. Planner reads durable memory (prior audit findings, known vendor flags), produces a DAG:
-   `gather transaction logs → detect anomalies → cross-reference policy docs → check flagged vendors against precedent → draft report → human signoff`.
-2. Coordinator dispatches `gather transaction logs` to Data Agent, `cross-reference policy docs` to Research Agent — both are independent, run in parallel.
-3. Data Agent flags three anomalous transactions with medium confidence. Research Agent finds the applicable policy clause. Both write results + evidence back via A2A.
-4. Coding Agent runs a variance-detection script on the flagged transactions to quantify severity.
-5. One anomaly's vendor conflicts with a durable-memory record (vendor previously cleared, now newly flagged) — Coordinator routes this to conflict resolution: Research Agent re-queries with a tighter date filter, resolves the discrepancy (different fiscal period).
-6. Reporting Agent synthesizes everything into a structured draft, explicitly marking the one anomaly still below confidence threshold as `needs human judgment`.
-7. Run pauses at the signoff gate. Human reviews, approves two findings, edits one. Approved findings promoted to durable memory with provenance back to this run.
-
----
-
-## Repository structure
-
+```bash
+python -m pip install -e .
+aios seed
+aios run "Prepare the FY26-Q3 quarterly audit review" --offline
 ```
-enterprise-ai-os/
-├── planner/              # goal decomposition, replanning logic
-├── coordinator/          # dispatch, retry, conflict resolution, escalation
-├── agents/
-│   ├── research/
-│   ├── data/
-│   ├── coding/
-│   └── reporting/
-├── memory/
-│   ├── episodic/         # checkpoint store
-│   └── semantic/         # vector index + knowledge graph
-├── mcp_gateway/          # tool registry, principal-type enforcement
-├── a2a/                  # message envelope schema, transport
-├── observability/        # trace store, run inspection
-├── ui/                   # task-graph view, review console
-└── examples/             # sample runs (e.g. audit review, vendor onboarding)
+
+`--offline` replays recorded model responses, so it needs **no API key** and produces
+the same trace every time. The graph, scheduler, agents, gateway, tools, memory and
+checkpointer are all the real ones — only the model calls are replayed.
+
+For a live run, export `ANTHROPIC_API_KEY` and drop `--offline`.
+
+```bash
+aios runs                       # the run index
+aios trace <run_id>             # replay the audit trail from disk
+aios memory --history           # durable facts, including superseded ones
+aios resume <run_id> --approve  # finish a paused run, any time, any shell
 ```
 
 ---
 
-## Roadmap
+## How it works
 
-- **Phase 1** — Planner + Coordinator + Research/Data/Reporting agents, single-domain demo (audit review).
-- **Phase 2** — Coding Agent as full agent (not just a sandboxed tool), durable memory promotion/invalidation policy hardened.
-- **Phase 3** — Additional domain agents (Compliance, Finance reconciliation, Notification), multi-domain goals spanning agent types.
-- **Phase 4** — Self-improving Planner: use trace/observability data to refine decomposition quality over time (mirrors a self-improving classifier approach, applied to planning rather than classification).
-- **Phase 5** — Multi-tenant hardening: per-tenant memory isolation, full principal-type auth flows, production-grade secrets handling.
+```mermaid
+flowchart TB
+    GOAL["goal: 'Prepare the FY26-Q3 quarterly audit review'"] --> PLAN
+
+    subgraph GRAPH["LangGraph state machine · every transition checkpointed"]
+        direction LR
+        PLAN["plan<br/><i>decompose + validate DAG</i>"] --> SCHED
+        SCHED{"schedule<br/><i>Coordinator.decide</i>"}
+        SCHED -->|"ready tasks"| EXEC["execute<br/><i>Send fan-out</i>"]
+        SCHED -->|"contradiction"| REC["reconcile<br/><i>re-query weakest claim</i>"]
+        SCHED -->|"needs a human"| SIGN["signoff<br/><i>interrupt + resume</i>"]
+        SCHED -->|"critical task blocked"| PLAN
+        SCHED -->|"all resolved"| FIN["finalize<br/><i>promote + report</i>"]
+        EXEC --> SCHED
+        REC --> SCHED
+        SIGN --> SCHED
+    end
+
+    EXEC -.->|"A2A Envelope"| AGENTS
+
+    subgraph AGENTS["Worker agents · typed I/O, confidence, evidence"]
+        direction LR
+        R["research"]
+        D["data"]
+        RP["reporting"]
+    end
+
+    AGENTS -->|"every call authorized"| GW["MCP Gateway<br/>principal grants · timeouts · rate limits · tracing"]
+    GW --> TOOLS["doc_search · sql_query · ledger_lookup<br/>peer_benchmark · render_report · record_signoff"]
+
+    FIN --> MEM
+    PLAN -.->|"recall precedent"| MEM
+
+    subgraph MEM["Memory"]
+        direction LR
+        EP[("Episodic<br/><i>checkpoints per run</i>")]
+        SEM[("Durable<br/><i>facts + provenance</i>")]
+    end
+
+    GRAPH -.-> TR[("Trace · every decision, one JSONL per run")]
+    GW -.-> TR
+```
+
+Three design decisions carry most of the weight:
+
+**The scheduler is pure policy.** [`coordinator.py`](src/aios/orchestration/coordinator.py)
+imports no LangGraph and does no I/O. It takes run state and returns a decision —
+dispatch, reconcile, sign-off, replan, finalize or halt. That's why the scheduling
+rules are unit-testable on their own, and why the graph file stays thin.
+
+**Agents never talk to each other, and never hold credentials.** Every dispatch is
+an [`Envelope`](src/aios/a2a.py), every answer a `Reply`. Every tool call goes through
+the [gateway](src/aios/mcp_gateway/gateway.py), which checks the calling principal's
+grant *on every call* — an agent asking for a tool outside its grant gets a traced
+`access_denied` and a failed task, not data.
+
+**Two independent gates guard durable memory.** A finding is promoted only if a human
+approved it **and** it clears a confidence bar. Contradicted facts are superseded, never
+overwritten, so the audit trail survives.
+
+---
+
+## The parts
+
+| Capability | Where it lives |
+|---|---|
+| Goal → validated task DAG, and replanning on failure | [`orchestration/planner.py`](src/aios/orchestration/planner.py) |
+| Scheduling, retry, degradation, conflict and escalation policy | [`orchestration/coordinator.py`](src/aios/orchestration/coordinator.py) |
+| LangGraph wiring: fan-out, routing, checkpoints, interrupt | [`orchestration/graph.py`](src/aios/orchestration/graph.py) |
+| Agent contract: pick tools, then produce a typed result | [`agents/base.py`](src/aios/agents/base.py) |
+| A2A envelope and reply | [`a2a.py`](src/aios/a2a.py) |
+| Tool authorization, timeouts, tracing | [`mcp_gateway/`](src/aios/mcp_gateway/) |
+| Episodic memory: checkpoints and the run index | [`memory/episodic.py`](src/aios/memory/episodic.py) |
+| Durable memory: promotion policy and supersession | [`memory/semantic.py`](src/aios/memory/semantic.py) |
+| Trace store and replay | [`observability/trace.py`](src/aios/observability/trace.py) |
+| Structured-output model client: Claude + deterministic replay | [`llm.py`](src/aios/llm.py) |
+
+Every agent returns the same contract, so the coordinator can validate outputs
+programmatically instead of parsing prose:
+
+```python
+class AgentResult(BaseModel):
+    summary: str
+    claims: list[Claim]        # subject / metric / value - what conflict detection compares
+    confidence: float          # drives re-query targeting and promotion
+    evidence: list[str]        # documents, query names, record ids
+```
+
+---
+
+## Failure handling, on demand
+
+Every one of these is a path you can run, not a paragraph in a design doc.
+
+| Failure | What the platform does |
+|---|---|
+| Tool fails transiently | Bounded retries with exponential backoff, per task |
+| Tool down for good, non-critical task | Marked `degraded`, run continues, gap named in the report |
+| Tool down for good, critical task | Task `blocked` → planner re-invoked → routes around it |
+| Two agents contradict each other | Least confident claimant re-queried; escalated to the human if it survives |
+| Planner emits a cyclic or unresolvable DAG | Rejected before dispatch, planner re-prompted with the reason |
+| Agent reaches for a tool it wasn't granted | Denied at the gateway, traced, task fails |
+| Reviewer isn't at their desk | Run suspends to a checkpoint; resume in another process, another day |
+| Report below the confidence bar | Human can approve it and the platform still refuses to promote it |
+
+Watch the last two together:
+
+```bash
+# critical tool dead for the whole run -> replan, and a report too weak to promote
+aios run "Prepare the FY26-Q3 quarterly audit review" \
+  --offline --scenario audit_outage --outage ledger_lookup
+```
+
+The blocked task stays visible in the graph as `superseded` — nothing silently
+disappears — and `aios memory` stays empty, because the revised report's confidence
+lands below the promotion bar.
+
+---
+
+## Tests
+
+```bash
+python -m pytest        # 58 passed
+```
+
+Policy is tested directly — plan validation, scheduling precedence, retry and
+degradation, conflict detection and resolution, gateway authorization and timeouts,
+promotion and supersession — and **both scenarios run end to end through the real
+graph** in seconds, with zero model spend.
+
+That last part is the useful trick: any run's model calls can be captured as a
+fixture and replayed, which turns "the orchestration still behaves correctly" into an
+ordinary regression test. Most agent systems can't write that test.
+
+---
+
+## Layout
+
+```
+src/aios/
+├── a2a.py                    A2A envelope and reply
+├── cli.py                    console
+├── config.py                 settings (AIOS_* env)
+├── llm.py                    structured-output client: Claude + replay
+├── runtime.py                wiring, start/resume
+├── agents/                   base contract + research, data, reporting
+├── mcp_gateway/              registry (principals, grants), gateway, tools
+├── memory/                   episodic (checkpoints, run index), semantic (facts)
+├── observability/            trace store and replay
+├── orchestration/            state, planner, coordinator, graph
+└── demo/                     synthetic fixtures + recorded scenarios
+```
+
+Runtime data lives under `.aios/` (checkpoints, traces, reports, durable memory) and
+`data/` (the synthetic warehouse and policy corpus). Both are gitignored — `aios seed`
+regenerates them.
+
+## Docs
+
+- [**docs/production-design.md**](docs/production-design.md) — how this becomes a
+  service: stores, queue and leases, scaling, cost model, rollout phases
+- [**docs/demo-script.md**](docs/demo-script.md) — a 10-minute walkthrough with
+  talking points
+- [**docs/design.md**](docs/design.md) — the original high-level design
+
+---
+
+## What this is not
+
+Stated plainly, because a demo that hides its edges isn't worth trusting.
+
+- **Data is synthetic.** `aios seed` generates it. The numbers were chosen so one run
+  exercises a policy breach, a cross-source contradiction, a flaky tool and a dead one.
+- **One domain so far.** The engine is domain-neutral — state, coordinator, graph,
+  gateway, agent base and memory contain no domain vocabulary — but only an audit
+  domain is wired up. Generality is claimed, not yet demonstrated.
+- **Conflict identity is literal.** Claims are matched on an exact `(subject, metric)`
+  pair. `55700.00` and `55,700` do not match. Production needs canonicalisation,
+  numeric tolerance and units. This is the weakest load-bearing part of the design.
+- **Confidence is self-reported.** Re-query targeting, escalation and promotion all key
+  off a number the model reports about itself. Until it's calibrated against outcomes
+  it's a heuristic — which is exactly why the human gate is mandatory.
+- **Single process, one run at a time.** No queue, no multi-tenancy, no auth beyond
+  principal typing. [The production design](docs/production-design.md) covers what
+  changes, and why the orchestration logic doesn't have to.
