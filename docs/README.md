@@ -84,18 +84,14 @@ flowchart TB
     end
 
     API --> AUTH --> SCHED --> Q
-    Q -->|lease| W1
-    Q -->|lease| W2
-    Q -->|lease| W3
-    W1 <--> PG
-    W2 <--> PG
-    W3 <--> PG
-    W1 --> OBJ
-    W1 --> VEC
-    W1 --> GW
-    W1 --> LLM
+    Q -->|"lease a run"| DATA
+    DATA <-->|"state + checkpoints"| PG
+    DATA -->|"reports, blobs"| OBJ
+    DATA -->|"recall"| VEC
+    DATA --> GW
+    DATA --> LLM
     GW --> EXT["Warehouses, APIs, docs"]
-    API --> PG
+    API -.->|"status, review"| PG
 ```
 
 ### Why workers are stateless
@@ -147,29 +143,45 @@ function call with a queue between the two — it does not change the coordinato
 
 ## 3. What a run is, in production
 
-A run is a row in `runs`, a chain of checkpoints, and a lease. Its lifecycle:
+A run is a row in `runs`, a chain of checkpoints, and a lease. Every transition it
+can make, numbered so the labels stay out of each other's way — the legend below
+carries the detail a one-word edge label cannot:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> queued : submit
-    queued --> planning : worker leases
-    planning --> running : plan validated
-    planning --> failed : plan invalid after budget
-    running --> running : superstep, checkpoint
-    running --> awaiting_signoff : interrupt at the gate
-    awaiting_signoff --> running : reviewer decides
-    awaiting_signoff --> expired : TTL elapses
-    running --> completed : finalize
-    running --> failed : halt, no progress possible
-    running --> queued : lease lost, requeue
-    running --> cancelled : operator or tenant cancels
-    completed --> [*]
-    failed --> [*]
-    expired --> [*]
-    cancelled --> [*]
+    direction LR
+    [*] --> queued : 1
+    queued --> planning : 2
+    planning --> running : 3
+    running --> running : 4
+    running --> awaiting_signoff : 5
+    awaiting_signoff --> running : 6
+    running --> completed : 7
+    planning --> failed : 8
+    running --> failed : 9
+    running --> queued : 10
+    awaiting_signoff --> expired : 11
+    running --> cancelled : 12
 ```
 
-Two transitions carry the reliability story:
+`completed`, `failed`, `expired` and `cancelled` are terminal.
+
+| # | Transition | Trigger | Consequence |
+|---|---|---|---|
+| 1 | → `queued` | Submitted and admitted | The run exists as a row before any work starts |
+| 2 | `queued` → `planning` | A worker takes the lease | Ownership is now time-bounded, not permanent |
+| 3 | `planning` → `running` | Plan validated | Nothing dispatches until the DAG is checked |
+| 4 | `running` → `running` | Each superstep | A checkpoint is written; recovery granularity is one wave of tasks |
+| 5 | `running` → `awaiting_signoff` | Graph interrupts at the gate | The worker is released — a paused run costs no compute |
+| 6 | `awaiting_signoff` → `running` | Reviewer decides | Requeued; any worker can pick it up and finish |
+| 7 | `running` → `completed` | Finalize | Approved findings promoted, report written |
+| 8 | `planning` → `failed` | Plan still invalid after the attempt budget | Nothing was dispatched, so nothing to unwind |
+| 9 | `running` → `failed` | No dispatchable work and no replan budget left | Partial results and the reason are preserved |
+| 10 | `running` → `queued` | Lease lost — the worker stopped heartbeating | Another worker resumes from the last checkpoint |
+| 11 | `awaiting_signoff` → `expired` | TTL elapses with no decision | Draft kept; the run stops holding anything |
+| 12 | `running` → `cancelled` | Operator or tenant cancels | In-flight tasks finish or time out; no new ones dispatch |
+
+Two of these carry the reliability story:
 
 **`running --> queued` on lease loss.** If a worker stops heartbeating, the
 queue takes the run back and another worker resumes it. Because it resumes from a
@@ -779,7 +791,7 @@ sequenceDiagram
     Q-->>W2: lease
     W2->>CP: load latest checkpoint
     CP-->>W2: state as of wave 2
-    Note over W2: wave 3 re-runs; waves 1 and 2 do not
+    Note over W2: wave 3 re-runs, waves 1 and 2 do not
 ```
 
 The guarantee is **at-least-once task execution with idempotent effects.** A task
@@ -843,10 +855,10 @@ flowchart TB
     RUN --> IN["per task: interpret call<br/>medium, reasoning-light"]
     RUN --> RP["report draft call<br/>strong model, long output"]
 
-    TP -->|"route to a cheaper model"| SAVE1["biggest easy saving"]
-    P -->|"cache the static prefix"| SAVE2["system prompt + tool catalogue"]
-    IN -->|"cache + lower effort"| SAVE3
-    RP -->|"keep on the strong model"| KEEP["quality matters here"]
+    TP --> SAVE1["route to a cheaper model<br/>biggest easy saving"]
+    P --> SAVE2["cache the static prefix<br/>system prompt + tool catalogue"]
+    IN --> SAVE3["cache, and lower the effort level"]
+    RP --> KEEP["keep on the strong model<br/>quality is visible to the reviewer"]
 ```
 
 Order of attack, cheapest first: cache the stable prefix (system prompt and tool
