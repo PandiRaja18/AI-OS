@@ -314,5 +314,85 @@ def memory(
     console.print(table)
 
 
+# --- platform: the hosted plane ----------------------------------------------
+
+
+@app.command()
+def provision(
+    tenant: Annotated[str, typer.Argument(help="Tenant id to create.")],
+    name: Annotated[str, typer.Option(help="Display name.")] = "",
+    reviewer: Annotated[
+        list[str] | None, typer.Option(help="Reviewer who may sign off.")
+    ] = None,
+    max_runs: Annotated[int, typer.Option(help="Concurrent run cap.")] = 4,
+    ttl_hours: Annotated[int, typer.Option(help="Hours before a review expires.")] = 24,
+) -> None:
+    """Create a tenant, its budget and its tool grants."""
+    from aios.platform import Platform, TenantPolicy
+
+    platform = Platform(_settings())
+    policy = platform.provision_tenant(
+        TenantPolicy(
+            tenant_id=tenant,
+            name=name or tenant,
+            max_concurrent_runs=max_runs,
+            review_ttl_hours=ttl_hours,
+            reviewers=tuple(reviewer or ()),
+        )
+    )
+    grants = platform.policy.grants(tenant)
+    console.print(f"tenant:    {policy.tenant_id} ({policy.name})")
+    console.print(f"reviewers: {', '.join(policy.reviewers) or 'anyone'}")
+    console.print(f"grants:    {', '.join(grant.tool for grant in grants)}")
+    console.print(f"budget:    ${policy.default_budget.max_currency} per run")
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Bind address.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port.")] = 8000,
+    workers: Annotated[int, typer.Option(help="In-process worker count.")] = 2,
+    lease_seconds: Annotated[int, typer.Option(help="Lease length.")] = 120,
+) -> None:
+    """Run the API, the console and a worker pool in one process."""
+    import uvicorn
+
+    from aios.platform import Platform, start_pool
+    from aios.platform.api import create_app
+
+    platform = Platform(_settings())
+    pool, _, _ = start_pool(platform, size=workers, lease_seconds=lease_seconds)
+    console.print(
+        f"[bold]AI-OS[/bold] console at http://{host}:{port}  "
+        f"({len(pool)} worker(s): {', '.join(w.worker_id for w in pool)})"
+    )
+    uvicorn.run(create_app(platform), host=host, port=port, log_level="warning")
+
+
+@app.command()
+def worker(
+    worker_id: Annotated[str, typer.Option("--id", help="Worker identity.")] = "worker-1",
+    lease_seconds: Annotated[int, typer.Option(help="Lease length.")] = 120,
+    once: Annotated[bool, typer.Option("--once", help="Drain the queue and exit.")] = False,
+) -> None:
+    """Run a standalone worker against the shared queue."""
+    from aios.platform import Platform, Worker
+
+    platform = Platform(_settings())
+    runner = Worker(platform, worker_id, lease_seconds=lease_seconds)
+    if once:
+        stats = runner.drain()
+        console.print(
+            f"{worker_id}: leased {stats.leased}, completed {stats.completed}, "
+            f"paused {stats.paused}, failed {stats.failed}"
+        )
+        return
+    console.print(f"{worker_id} polling for work; ctrl-c to stop")
+    try:
+        runner.run_forever()
+    except KeyboardInterrupt:
+        console.print(f"\n{worker_id} stopped after {runner.stats.leased} run(s)")
+
+
 if __name__ == "__main__":
     app()

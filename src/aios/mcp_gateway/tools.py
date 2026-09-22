@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -129,17 +129,22 @@ def peer_benchmark(category: str) -> dict[str, Any]:
     raise ConnectionError(f"peer-benchmark provider unreachable (category={category})")
 
 
-def render_report(
-    report_dir: Path, run_id: str, title: str, sections: Sequence[dict[str, str]]
-) -> str:
-    """Write the report markdown and return its path."""
-    report_dir.mkdir(parents=True, exist_ok=True)
+def report_markdown(title: str, sections: Sequence[dict[str, str]]) -> str:
+    """Render the report body. Separated so a host can store it anywhere."""
     lines = [f"# {title}", ""]
     for section in sections:
         heading = section.get("heading", "Section")
         lines += [f"## {heading}", "", section.get("body", ""), ""]
+    return "\n".join(lines)
+
+
+def render_report(
+    report_dir: Path, run_id: str, title: str, sections: Sequence[dict[str, str]]
+) -> str:
+    """Write the report markdown to local disk and return its path."""
+    report_dir.mkdir(parents=True, exist_ok=True)
     path = report_dir / f"{run_id}.md"
-    path.write_text("\n".join(lines), encoding="utf-8")
+    path.write_text(report_markdown(title, sections), encoding="utf-8")
     return str(path)
 
 
@@ -175,9 +180,22 @@ def _with_outage(tool: ToolSpec) -> ToolSpec:
     )
 
 
-def build_tools(settings: Settings, run_id: str) -> list[ToolSpec]:
-    """Assemble the tool registry for one run."""
+def build_tools(
+    settings: Settings,
+    run_id: str,
+    report_writer: Callable[[str, Sequence[dict[str, str]]], str] | None = None,
+) -> list[ToolSpec]:
+    """Assemble the tool registry for one run.
+
+    `report_writer` replaces the local-disk renderer, so a hosted run can put
+    the report in object storage instead of on the worker that produced it.
+    """
     ledger = _FlakyLedger(settings.demo_db, settings.injected_ledger_failures)
+    render = report_writer or (
+        lambda title, sections: render_report(
+            settings.report_dir, run_id, title, sections
+        )
+    )
     tools = [
         ToolSpec(
             name="sql_query",
@@ -219,9 +237,7 @@ def build_tools(settings: Settings, run_id: str) -> list[ToolSpec]:
                 "Render the final report. Arguments: title, sections "
                 "(list of {heading, body})."
             ),
-            handler=lambda title, sections: render_report(
-                settings.report_dir, run_id, title, sections
-            ),
+            handler=lambda title, sections: render(title, sections),
             allowed_agents=frozenset({_REPORTING}),
         ),
         ToolSpec(

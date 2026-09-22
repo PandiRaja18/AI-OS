@@ -30,6 +30,78 @@ def trace(settings: Settings) -> TraceStore:
     return TraceStore("run-test", settings.trace_dir)
 
 
+def _platform(settings: Settings, tmp_path: Path, name: str = "platform"):
+    """A fully wired platform with two provisioned tenants."""
+    from aios.platform import Platform, TenantPolicy
+
+    platform = Platform(settings, database_url=f"sqlite:///{tmp_path / name}.db")
+    platform.provision_tenant(
+        TenantPolicy(
+            tenant_id="acme",
+            name="Acme",
+            max_concurrent_runs=2,
+            reviewers=("cfo",),
+        )
+    )
+    platform.provision_tenant(
+        TenantPolicy(
+            tenant_id="globex",
+            name="Globex",
+            max_concurrent_runs=2,
+            reviewers=("dana",),
+        )
+    )
+    return platform
+
+
+@pytest.fixture
+def platform(settings: Settings, tmp_path: Path):
+    instance = _platform(settings, tmp_path)
+    yield instance
+    instance.close()
+
+
+@pytest.fixture
+def outage_platform(settings: Settings, tmp_path: Path):
+    """A platform whose ledger tool is down for good."""
+    from aios.platform import TenantPolicy
+
+    configured = settings.model_copy(update={"outage_tools": ("ledger_lookup",)})
+    instance = _platform(configured, tmp_path, "outage")
+    yield instance
+    instance.close()
+
+
+@pytest.fixture
+def alice(platform):
+    return platform.tokens.resolve(platform.token_for("acme", "alice"))
+
+
+@pytest.fixture
+def cfo(platform):
+    return platform.tokens.resolve(platform.token_for("acme", "cfo"))
+
+
+@pytest.fixture
+def bob(platform):
+    return platform.tokens.resolve(platform.token_for("globex", "bob"))
+
+
+@pytest.fixture
+def dana(platform):
+    return platform.tokens.resolve(platform.token_for("globex", "dana"))
+
+
+@pytest.fixture
+def outage_caller(outage_platform):
+    return outage_platform.tokens.resolve(outage_platform.token_for("acme", "alice"))
+
+
+@pytest.fixture
+def outage_reviewer(outage_platform):
+    return outage_platform.tokens.resolve(outage_platform.token_for("acme", "cfo"))
+
+
 def make_task(task_id: str, **overrides) -> Task:
     """Build a task with sensible defaults for scheduling tests."""
     fields = {

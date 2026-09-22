@@ -64,22 +64,31 @@ Listener = Callable[[TraceEvent], None]
 
 
 class TraceStore:
-    """Writes a run's events to JSONL and forwards them to a live listener."""
+    """Records a run's events and forwards them to a live listener.
+
+    With a `trace_dir` it writes JSONL, which is what the single-process console
+    reads. With none, the listener is the only sink - that is how the platform
+    routes events into a shared store instead of a worker's local disk.
+    """
 
     def __init__(
-        self, run_id: str, trace_dir: Path, listener: Listener | None = None
+        self,
+        run_id: str,
+        trace_dir: Path | None = None,
+        listener: Listener | None = None,
+        start_seq: int | None = None,
     ) -> None:
         self._run_id = run_id
-        self._path = trace_dir / f"{run_id}.jsonl"
+        self._path = trace_dir / f"{run_id}.jsonl" if trace_dir else None
         self._listener = listener
         self._lock = threading.Lock()
         self._events: list[TraceEvent] = []
-        # A run resumed in a later process appends to the same log, so the
-        # sequence continues from what is already on disk.
-        self._seq = _last_seq(self._path)
+        # A run resumed in a later process continues the same sequence, whether
+        # the earlier events are on disk or in a shared store.
+        self._seq = start_seq if start_seq is not None else _last_seq(self._path)
 
     @property
-    def path(self) -> Path:
+    def path(self) -> Path | None:
         return self._path
 
     @property
@@ -110,16 +119,17 @@ class TraceStore:
                 detail=detail,
             )
             self._events.append(event)
-            with self._path.open("a", encoding="utf-8") as handle:
-                handle.write(event.model_dump_json() + "\n")
+            if self._path is not None:
+                with self._path.open("a", encoding="utf-8") as handle:
+                    handle.write(event.model_dump_json() + "\n")
         if self._listener is not None:
             self._listener(event)
         return event
 
 
-def _last_seq(path: Path) -> int:
+def _last_seq(path: Path | None) -> int:
     """Highest sequence number already recorded in a trace log."""
-    if not path.exists():
+    if path is None or not path.exists():
         return 0
     with path.open(encoding="utf-8") as handle:
         return max(

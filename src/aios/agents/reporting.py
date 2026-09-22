@@ -15,7 +15,7 @@ from aios.agents.base import Agent
 from aios.llm import call_key
 from aios.orchestration.state import AgentResult, AgentType, Claim
 
-ROLE_PROMPT = """You are the Reporting agent of an enterprise audit platform.
+ROLE_PROMPT = """You are the Reporting agent of an audit platform.
 
 You synthesize other agents' typed results into a document a reviewer can sign
 off. You never introduce a figure that no upstream result supports. Anything

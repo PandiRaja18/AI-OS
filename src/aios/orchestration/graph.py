@@ -12,6 +12,7 @@ where the parallelism in a plan actually comes from.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from langgraph.graph import END, START, StateGraph
@@ -54,6 +55,9 @@ class Deps:
     agents: dict[AgentType, Agent]
     gateway: McpGateway
     memory: SemanticMemory
+    # Optional hook: called once per task execution, including failures, so a
+    # host can keep an append-only history outside the checkpoint.
+    on_attempt: Callable[..., None] | None = None
 
 
 def build_graph(deps: Deps) -> StateGraph:
@@ -204,7 +208,9 @@ def _execute_node(deps: Deps):
             message_id=envelope.message_id,
         )
 
+        started = time.perf_counter()
         reply = deps.agents[task.agent].handle(envelope)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
         if reply.status is ReplyStatus.OK:
             status = (
                 TaskStatus.AWAITING_SIGNOFF
@@ -220,12 +226,14 @@ def _execute_node(deps: Deps):
                     "context": {},
                 }
             )
+            _record_attempt(deps, task, attempt, "ok", None, elapsed_ms, reply.result)
             return {"tasks": {task.task_id: updated}}
 
         error = reply.error or "unknown agent failure"
         updated = deps.coordinator.on_failure(
             task.model_copy(update={"attempts": attempt}), error
         )
+        _record_attempt(deps, task, attempt, _outcome(error), error, elapsed_ms, None)
         if updated.status is TaskStatus.PENDING:
             deps.trace.emit(
                 EventKind.TASK_RETRY,
@@ -409,6 +417,39 @@ def _halt_node(deps: Deps):
         return {"status": RunStatus.FAILED, "replan_reason": reason}
 
     return halt
+
+
+def _outcome(error: str) -> str:
+    """Classify a failure for the attempt history."""
+    if "may not call" in error:
+        return "denied"
+    if "exceeded" in error or "timeout" in error:
+        return "timeout"
+    if "no recorded response" in error or "model" in error:
+        return "llm_error"
+    return "tool_error"
+
+
+def _record_attempt(
+    deps: Deps,
+    task: Task,
+    attempt: int,
+    outcome: str,
+    error: str | None,
+    duration_ms: int,
+    result,
+) -> None:
+    if deps.on_attempt is None:
+        return
+    deps.on_attempt(
+        task_id=task.task_id,
+        attempt=attempt,
+        agent=task.agent.value,
+        outcome=outcome,
+        error=error,
+        confidence=result.confidence if result is not None else None,
+        duration_ms=duration_ms,
+    )
 
 
 def _dispatch(state: RunState, task: Task) -> Dispatch:
