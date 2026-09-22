@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     workspace: Path = Path(".aios")
     data_dir: Path = Path("data")
 
+    # Which model backs a live run: "claude" or "local". A self-hosted server is
+    # reached through its OpenAI-compatible endpoint, or Ollama's native one.
+    llm_provider: str = "claude"
+    llm_base_url: str = "http://localhost:11434"
+    llm_model: str = "qwen2.5:32b-instruct"
+    llm_api_style: str = "ollama"
+    llm_api_key: str | None = None
+    llm_timeout_seconds: float = 300.0
+    llm_max_repairs: int = 2
+
     max_plan_attempts: int = 3
     max_task_attempts: int = 3
     retry_backoff_seconds: float = 0.25

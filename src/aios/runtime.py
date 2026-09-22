@@ -18,8 +18,7 @@ from langgraph.types import Command
 
 from aios.agents import build_agents
 from aios.config import Settings
-from aios.demo.replay import SCENARIOS
-from aios.llm import ClaudeClient, LlmClient, ReplayClient
+from aios.llm import LlmClient
 from aios.mcp_gateway import McpGateway
 from aios.mcp_gateway.tools import build_tools
 from aios.memory import PromotionPolicy, RunIndex, SemanticMemory, checkpointer
@@ -28,6 +27,7 @@ from aios.orchestration.coordinator import Coordinator, RetryPolicy
 from aios.orchestration.graph import Deps, build_graph
 from aios.orchestration.planner import Planner
 from aios.orchestration.state import RunStatus, Signoff, new_run_state
+from aios.providers import build_llm
 
 RECURSION_LIMIT = 80
 
@@ -123,14 +123,7 @@ class Runtime:
         return deps, trace
 
     def _llm(self, trace: TraceStore) -> LlmClient:
-        if not self._offline:
-            return ClaudeClient(self.settings.model, trace)
-        recording = SCENARIOS.get(self._scenario)
-        if recording is None:
-            raise KeyError(
-                f"unknown scenario {self._scenario!r}; available: {sorted(SCENARIOS)}"
-            )
-        return ReplayClient(recording, trace)
+        return build_llm(self.settings, trace, self._offline, self._scenario)
 
     def _invoke(
         self,

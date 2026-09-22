@@ -22,14 +22,26 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 MAX_TOKENS = 8000
 
 
+class Usage(BaseModel):
+    """Tokens consumed by one call, when the client can report them."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
 class LlmError(RuntimeError):
     """The model could not produce a usable structured response."""
 
 
 class LlmClient(Protocol):
-    """Structured-output model client."""
+    """Structured-output model client.
+
+    `last_usage` carries the tokens of the most recent call when the client can
+    report them. Clients that cannot leave it None and the meter estimates.
+    """
 
     name: str
+    last_usage: "Usage | None"
 
     def structured(
         self,
@@ -55,6 +67,7 @@ class ClaudeClient:
         self._model = model
         self._trace = trace
         self.name = model
+        self.last_usage: Usage | None = None
 
     def structured(
         self,
@@ -85,6 +98,10 @@ class ClaudeClient:
         if parsed is None:
             raise LlmError(f"{key}: no structured output returned")
 
+        self.last_usage = Usage(
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
         self._trace.emit(
             EventKind.LLM_CALL,
             f"{key} -> {output_model.__name__}",
@@ -111,6 +128,7 @@ class ReplayClient:
         self._responses = responses
         self._trace = trace
         self.name = "replay"
+        self.last_usage: Usage | None = None
 
     def structured(
         self,
