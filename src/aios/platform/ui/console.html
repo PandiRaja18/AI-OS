@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI-OS Console</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #c9d1d9;
+    --dim: #8b949e; --faint: #484f58; --accent: #58a6ff; --green: #3fb950;
+    --yellow: #d29922; --amber: #e3b341; --red: #f85149; --purple: #d2a8ff;
+    --cyan: #39c5cf;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  header .who { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+  header .spacer { flex: 1; }
+  .metrics { display: flex; gap: 14px; flex-wrap: wrap; }
+  .metric { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .metric b { color: var(--text); font-weight: 600; }
+  main {
+    display: grid; grid-template-columns: 320px minmax(0, 1fr) 340px;
+    gap: 14px; padding: 14px; align-items: start;
+  }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden;
+  }
+  .panel > h2 {
+    margin: 0; padding: 10px 14px; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+    border-bottom: 1px solid var(--border);
+  }
+  .body { padding: 12px 14px; }
+  label { display: block; font-size: 11px; color: var(--dim); margin: 8px 0 4px; }
+  input, select, textarea, button {
+    font-family: inherit; font-size: 13px; width: 100%;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
+  }
+  button {
+    cursor: pointer; font-weight: 600; border-color: transparent;
+    background: var(--accent); color: #06101f; margin-top: 10px;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.ghost { background: transparent; color: var(--text); border-color: var(--border); }
+  button.ok { background: var(--green); color: #06170c; }
+  button.no { background: var(--red); color: #1d0505; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  .run {
+    padding: 9px 14px; border-bottom: 1px solid var(--border); cursor: pointer;
+  }
+  .run:hover { background: #1c2430; }
+  .run.active { background: #1f6feb22; border-left: 2px solid var(--accent); }
+  .run .goal {
+    font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .run .meta {
+    font-family: var(--mono); font-size: 10px; color: var(--faint);
+    display: flex; justify-content: space-between; gap: 8px; margin-top: 3px;
+  }
+  .pill {
+    font-family: var(--mono); font-size: 10px; padding: 1px 6px;
+    border-radius: 10px; border: 1px solid currentColor; white-space: nowrap;
+  }
+  .queued { color: var(--dim); } .planning, .running { color: var(--cyan); }
+  .awaiting_signoff { color: var(--amber); } .completed { color: var(--green); }
+  .failed, .expired, .cancelled { color: var(--red); }
+  #trace {
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.7;
+    max-height: 62vh; overflow-y: auto; padding: 10px 14px;
+  }
+  .ev { display: grid; grid-template-columns: 34px 150px 110px 1fr auto; gap: 8px; }
+  .ev .seq { color: var(--faint); text-align: right; }
+  .ev .actor { color: var(--faint); overflow: hidden; text-overflow: ellipsis; }
+  .ev .msg { color: var(--text); word-break: break-word; }
+  .ev .ms { color: var(--faint); }
+  .k-plan, .k-replan { color: var(--purple); }
+  .k-dispatch { color: var(--cyan); }
+  .k-tool_call, .k-memory_recall, .k-memory_promote, .k-llm_call { color: var(--accent); }
+  .k-tool_error, .k-task_retry { color: var(--yellow); }
+  .k-task_degraded, .k-signoff_requested { color: var(--amber); }
+  .k-conflict_detected, .k-conflict_escalated, .k-task_blocked, .k-access_denied { color: var(--red); }
+  .k-agent_result, .k-conflict_resolved, .k-signoff_recorded, .k-report { color: var(--green); }
+  .k-run_status, .k-run_started { color: var(--dim); }
+  .review { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .review .goal { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .review .draft {
+    font-size: 11.5px; color: var(--dim); max-height: 130px; overflow-y: auto;
+    border-left: 2px solid var(--border); padding-left: 8px; margin: 6px 0;
+  }
+  .warn { color: var(--amber); font-family: var(--mono); font-size: 11px; }
+  .empty { color: var(--faint); font-size: 12px; padding: 14px; }
+  .toast {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    padding: 9px 16px; font-size: 12px; opacity: 0; transition: opacity .2s;
+    pointer-events: none; z-index: 20;
+  }
+  .toast.show { opacity: 1; }
+  pre#report {
+    white-space: pre-wrap; font-family: var(--mono); font-size: 11.5px;
+    max-height: 40vh; overflow-y: auto; margin: 0; padding: 12px 14px;
+    color: var(--dim);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI&#8209;OS Console</h1>
+  <span class="who" id="who">not signed in</span>
+  <span class="spacer"></span>
+  <div class="metrics" id="metrics"></div>
+</header>
+
+<main>
+  <div>
+    <section class="panel">
+      <h2>Session</h2>
+      <div class="body">
+        <label for="tenant">Tenant</label>
+        <input id="tenant" value="acme">
+        <label for="subject">Acting as</label>
+        <input id="subject" value="alice">
+        <button id="signin" class="ghost">Sign in</button>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:14px">
+      <h2>New run</h2>
+      <div class="body">
+        <label for="goal">Goal</label>
+        <textarea id="goal" rows="3">Prepare the FY26-Q3 quarterly audit review</textarea>
+        <div class="row">
+          <div style="flex:1">
+            <label for="scenario">Scenario</label>
+            <select id="scenario">
+              <option value="audit">audit</option>
+              <option value="audit_outage">audit_outage</option>
+            </select>
+          </div>
+          <div style="flex:1">
+            <label for="lane">Lane</label>
+            <select id="lane">
+              <option value="interactive">interactive</option>
+              <option value="batch">batch</option>
+              <option value="backfill">backfill</option>
+            </select>
+          </div>
+        </div>
+        <button id="submit">Submit run</button>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:14px">
+      <h2>Runs</h2>
+      <ul id="runs"><li class="empty">Sign in to load runs.</li></ul>
+    </section>
+  </div>
+
+  <div>
+    <section class="panel">
+      <h2 id="traceTitle">Trace</h2>
+      <div id="trace"><div class="empty">Select a run to follow its trace.</div></div>
+    </section>
+    <section class="panel" style="margin-top:14px">
+      <h2>Report</h2>
+      <pre id="report">No report yet.</pre>
+    </section>
+  </div>
+
+  <div>
+    <section class="panel">
+      <h2>Review inbox</h2>
+      <div id="reviews"><div class="empty">Nothing awaiting a decision.</div></div>
+    </section>
+    <section class="panel" style="margin-top:14px">
+      <h2>Durable memory</h2>
+      <div id="memory"><div class="empty">No facts promoted yet.</div></div>
+    </section>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const state = { token: null, principal: null, runId: null, stream: null, seq: 0 };
+const $ = (id) => document.getElementById(id);
+
+function toast(message) {
+  const element = $("toast");
+  element.textContent = message;
+  element.classList.add("show");
+  setTimeout(() => element.classList.remove("show"), 2600);
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(state.token ? { Authorization: "Bearer " + state.token } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(detail.detail || response.statusText);
+  }
+  return response.status === 204 ? null : response.json();
+}
+
+async function signIn() {
+  const tenant_id = $("tenant").value.trim();
+  const subject = $("subject").value.trim();
+  const minted = await api("/v1/tokens", {
+    method: "POST",
+    body: JSON.stringify({ tenant_id, subject, kind: "human" }),
+  });
+  state.token = minted.token;
+  state.principal = `${subject}@${tenant_id}`;
+  $("who").textContent = state.principal;
+  toast(`Signed in as ${state.principal}`);
+  refresh();
+}
+
+async function submitRun() {
+  try {
+    const created = await api("/v1/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        goal: $("goal").value,
+        scenario: $("scenario").value,
+        lane: $("lane").value,
+        offline: true,
+      }),
+    });
+    toast(`Queued ${created.run_id}`);
+    await loadRuns();
+    select(created.run_id);
+  } catch (error) {
+    toast(`Rejected: ${error.message}`);
+  }
+}
+
+function statusPill(status) {
+  return `<span class="pill ${status}">${status}</span>`;
+}
+
+async function loadRuns() {
+  const runs = await api("/v1/runs?limit=40");
+  const list = $("runs");
+  if (!runs.length) {
+    list.innerHTML = '<li class="empty">No runs yet.</li>';
+    return;
+  }
+  list.innerHTML = runs
+    .map(
+      (run) => `
+      <li class="run ${run.run_id === state.runId ? "active" : ""}" data-id="${run.run_id}">
+        <div class="goal">${escapeHtml(run.goal)}</div>
+        <div class="meta">
+          <span>${run.run_id.slice(0, 16)}</span>
+          ${statusPill(run.status)}
+        </div>
+        <div class="meta">
+          <span>${run.lane} · $${Number(run.spend.currency).toFixed(4)}</span>
+          <span>${run.worker_id || ""}</span>
+        </div>
+      </li>`
+    )
+    .join("");
+  list.querySelectorAll(".run").forEach((node) =>
+    node.addEventListener("click", () => select(node.dataset.id))
+  );
+}
+
+function renderEvent(event) {
+  const ms = event.duration_ms ? `${event.duration_ms}ms` : "";
+  return `<div class="ev">
+    <span class="seq">${event.seq}</span>
+    <span class="k-${event.kind}">${event.kind}</span>
+    <span class="actor">${escapeHtml(event.actor)}</span>
+    <span class="msg">${escapeHtml(event.message)}</span>
+    <span class="ms">${ms}</span>
+  </div>`;
+}
+
+async function select(runId) {
+  state.runId = runId;
+  state.seq = 0;
+  $("traceTitle").textContent = `Trace · ${runId}`;
+  $("trace").innerHTML = "";
+  if (state.stream) state.stream.close();
+  await loadRuns();
+
+  const events = await api(`/v1/runs/${runId}/trace`);
+  const box = $("trace");
+  box.innerHTML = events.map(renderEvent).join("") || '<div class="empty">No events yet.</div>';
+  state.seq = events.length ? events[events.length - 1].seq : 0;
+  box.scrollTop = box.scrollHeight;
+  follow(runId);
+  loadDetail(runId);
+}
+
+function follow(runId) {
+  // EventSource cannot set headers, so the token rides as a query parameter on
+  // this read-only stream.
+  state.stream = new EventSource(
+    `/v1/runs/${runId}/stream?since_seq=${state.seq}&token=${encodeURIComponent(state.token)}`
+  );
+  state.stream.onmessage = (message) => {
+    const event = JSON.parse(message.data);
+    if (event.seq <= state.seq) return;
+    state.seq = event.seq;
+    const box = $("trace");
+    box.insertAdjacentHTML("beforeend", renderEvent(event));
+    box.scrollTop = box.scrollHeight;
+  };
+  state.stream.addEventListener("end", () => {
+    state.stream.close();
+    refresh();
+  });
+  state.stream.onerror = () => state.stream.close();
+}
+
+async function loadDetail(runId) {
+  const detail = await api(`/v1/runs/${runId}`);
+  if (detail.report_uri) {
+    try {
+      const report = await api(`/v1/reports?uri=${encodeURIComponent(detail.report_uri)}`);
+      $("report").textContent = report.markdown;
+    } catch {
+      $("report").textContent = "Report not readable.";
+    }
+  } else {
+    $("report").textContent = detail.review?.draft || "No report yet.";
+  }
+}
+
+async function loadReviews() {
+  const reviews = await api("/v1/reviews");
+  const box = $("reviews");
+  if (!reviews.length) {
+    box.innerHTML = '<div class="empty">Nothing awaiting a decision.</div>';
+    return;
+  }
+  box.innerHTML = reviews
+    .map(
+      (review) => `
+      <div class="review">
+        <div class="goal">${escapeHtml(review.goal)}</div>
+        <div class="draft">${escapeHtml(review.draft || "(no draft)")}</div>
+        ${
+          review.degraded_tasks || review.open_conflicts
+            ? `<div class="warn">${review.degraded_tasks} degraded · ${review.open_conflicts} unresolved conflict(s)</div>`
+            : ""
+        }
+        <div class="row">
+          <button class="ok" data-approve="${review.review_id}">Approve</button>
+          <button class="no" data-reject="${review.review_id}">Reject</button>
+        </div>
+        <button class="ghost" data-open="${review.run_id}">Open run</button>
+      </div>`
+    )
+    .join("");
+  box.querySelectorAll("[data-approve]").forEach((node) =>
+    node.addEventListener("click", () => decide(node.dataset.approve, true))
+  );
+  box.querySelectorAll("[data-reject]").forEach((node) =>
+    node.addEventListener("click", () => decide(node.dataset.reject, false))
+  );
+  box.querySelectorAll("[data-open]").forEach((node) =>
+    node.addEventListener("click", () => select(node.dataset.open))
+  );
+}
+
+async function decide(reviewId, approved) {
+  try {
+    await api(`/v1/reviews/${reviewId}/decide`, {
+      method: "POST",
+      body: JSON.stringify({ approved, note: approved ? "approved in console" : "rejected in console" }),
+    });
+    toast(approved ? "Approved - run resumed" : "Rejected");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function loadMetrics() {
+  const metrics = await api("/v1/metrics");
+  const quality = metrics.decision_quality;
+  $("metrics").innerHTML = [
+    ["queue", metrics.queue_depth],
+    ["runs", metrics.runs_total],
+    ["conflicts", `${quality.conflicts_resolved}/${quality.conflicts_detected} resolved`],
+    ["degraded", quality.tasks_degraded],
+    ["replans", quality.replans],
+    ["promotions", quality.promotions],
+    ["spend", `$${Number(metrics.spend.currency).toFixed(4)}`],
+    ["llm calls", metrics.spend.llm_calls],
+  ]
+    .map(([label, value]) => `<span class="metric">${label} <b>${value}</b></span>`)
+    .join("");
+}
+
+async function loadMemory() {
+  const facts = await api("/v1/memory");
+  const box = $("memory");
+  if (!facts.length) {
+    box.innerHTML = '<div class="empty">No facts promoted yet.</div>';
+    return;
+  }
+  box.innerHTML = facts
+    .map(
+      (fact) => `<div class="review" style="padding:8px 14px">
+        <div class="meta" style="font-family:var(--mono);font-size:11px">
+          ${escapeHtml(fact.subject)}.${escapeHtml(fact.metric)}
+        </div>
+        <div style="font-size:12px">${escapeHtml(fact.value)}
+          <span style="color:var(--faint)"> · ${fact.confidence} · ${escapeHtml(fact.provenance)}</span>
+        </div>
+      </div>`
+    )
+    .join("");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character])
+  );
+}
+
+async function refresh() {
+  if (!state.token) return;
+  await Promise.all([loadRuns(), loadReviews(), loadMetrics(), loadMemory()]);
+  if (state.runId) loadDetail(state.runId);
+}
+
+$("signin").addEventListener("click", () => signIn().catch((e) => toast(e.message)));
+$("submit").addEventListener("click", submitRun);
+setInterval(() => { if (state.token) refresh(); }, 4000);
+signIn().catch(() => toast("Start the API, then sign in."));
+</script>
+</body>
+</html>
