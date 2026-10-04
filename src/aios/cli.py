@@ -395,6 +395,103 @@ def worker(
         console.print(f"\n{worker_id} stopped after {runner.stats.leased} run(s)")
 
 
+@app.command()
+def use(
+    folder: Annotated[
+        Path | None, typer.Argument(help="Folder holding your files.")
+    ] = None,
+    demo: Annotated[
+        bool, typer.Option("--demo", help="Go back to the built-in demo data.")
+    ] = False,
+    name: Annotated[str | None, typer.Option(help="Name for this domain.")] = None,
+    tenant: Annotated[str, typer.Option(help="Tenant to grant the tools to.")] = "me",
+    reviewer: Annotated[str, typer.Option(help="Who signs runs off.")] = "me",
+    force: Annotated[
+        bool, typer.Option("--force", help="Regenerate an existing pack.")
+    ] = False,
+) -> None:
+    """Point everything at a folder of your files. One command, then `aios serve`.
+
+    Inspects the folder, writes a domain pack for it, records it as the active
+    domain, and grants your tenant the tools that domain publishes.
+    """
+    from aios.config import write_active_domain
+    from aios.domain import DomainPack, scaffold_from_folder
+    from aios.files import inventory
+    from aios.platform import Platform, TenantPolicy
+
+    settings = Settings()
+    settings.ensure_dirs()
+
+    if demo:
+        write_active_domain(settings.workspace, None)
+        platform = Platform(Settings())
+        platform.provision_tenant(
+            TenantPolicy(tenant_id=tenant, name=tenant, reviewers=(reviewer,)),
+            from_domain=False,
+        )
+        console.print("[bold]using the built-in demo data[/bold]")
+        console.print("  run [bold]aios seed[/bold] if you have not already, "
+                      "then [bold]aios serve[/bold]")
+        return
+
+    if folder is None:
+        current = settings.domain_file
+        if current is None:
+            console.print("using the built-in [bold]demo[/bold] data")
+        else:
+            console.print(f"using [bold]{DomainPack.load(current).name}[/bold] "
+                          f"[dim]{current}[/dim]")
+        console.print("\npass a folder to switch: [bold]aios use C:/work/my-files[/bold]")
+        return
+
+    folder = folder.resolve()
+    if not folder.exists():
+        console.print(f"[red]no folder at {folder}[/red]")
+        raise typer.Exit(code=1)
+
+    found = inventory(folder)
+    if not found["tabular"] and not found["documents"]:
+        console.print(f"[red]nothing readable in {folder}[/red]")
+        console.print("  data:      .csv .tsv .xlsx")
+        console.print("  documents: .md .txt .pdf .docx")
+        raise typer.Exit(code=1)
+
+    domain_name = name or folder.name.replace(" ", "-").lower() or "mydomain"
+    pack_path = settings.workspace / "domains" / f"{domain_name}.toml"
+    pack_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if pack_path.exists() and not force:
+        console.print(f"[dim]keeping your edits in {pack_path}[/dim]")
+    else:
+        pack_path.unlink(missing_ok=True)
+        scaffold_from_folder(domain_name, pack_path, folder, settings.workspace)
+
+    pack = DomainPack.load(pack_path)
+    problems = pack.check()
+    for problem in problems:
+        console.print(f"[red]{problem}[/red]")
+    if problems:
+        raise typer.Exit(code=1)
+
+    write_active_domain(settings.workspace, pack_path)
+    platform = Platform(Settings())
+    platform.provision_tenant(
+        TenantPolicy(tenant_id=tenant, name=tenant, reviewers=(reviewer,))
+    )
+    granted = [grant.tool for grant in platform.policy.grants(tenant)]
+
+    console.print(f"[bold]{domain_name}[/bold] is now active")
+    console.print(f"  files:  {len(found['tabular'])} spreadsheet(s), "
+                  f"{len(found['documents'])} document(s)"
+                  + (f", {len(found['ignored'])} ignored" if found["ignored"] else ""))
+    console.print(f"  tools:  {', '.join(granted)}")
+    console.print(f"  tenant: {tenant}, reviewer {reviewer}")
+    console.print(f"  pack:   {pack_path} [dim](edit to tune queries and prompts)[/dim]")
+    console.print("\nNext: [bold]aios serve[/bold], then sign in as "
+                  f"[bold]{tenant}[/bold]")
+
+
 # --- domain packs: pointing the engine at your own data ----------------------
 
 domain_app = typer.Typer(

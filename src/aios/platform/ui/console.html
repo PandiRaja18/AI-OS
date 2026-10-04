@@ -24,6 +24,12 @@
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; }
   header .who { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+  .domain {
+    font-family: var(--mono); font-size: 11px; padding: 2px 9px;
+    border-radius: 10px; border: 1px solid currentColor; white-space: nowrap;
+  }
+  .domain.own { color: var(--green); }
+  .domain.demo { color: var(--amber); }
   header .spacer { flex: 1; }
   .metrics { display: flex; gap: 14px; flex-wrap: wrap; }
   .metric { font-family: var(--mono); font-size: 11px; color: var(--dim); }
@@ -122,6 +128,7 @@
 <header>
   <h1>AI&#8209;OS Console</h1>
   <span class="who" id="who">not signed in</span>
+  <span class="domain demo" id="domain" title="which data runs use">checking…</span>
   <span class="spacer"></span>
   <div class="metrics" id="metrics"></div>
 </header>
@@ -401,6 +408,20 @@ async function decide(reviewId, approved) {
   }
 }
 
+async function loadDomain() {
+  const health = await fetch("/healthz").then((r) => r.json());
+  const domain = health.domain;
+  const node = $("domain");
+  node.className = "domain " + (domain.is_demo ? "demo" : "own");
+  node.textContent = domain.is_demo
+    ? "DEMO DATA"
+    : `domain: ${domain.name}`;
+  node.title = domain.is_demo
+    ? "Built-in demo fixtures. Run `aios use <folder>` to use your own files."
+    : `${domain.pack}
+tools: ${domain.tools.join(", ")}`;
+}
+
 async function loadMetrics() {
   const metrics = await api("/v1/metrics");
   const quality = metrics.decision_quality;
@@ -447,13 +468,14 @@ function escapeHtml(value) {
 
 async function refresh() {
   if (!state.token) return;
-  await Promise.all([loadRuns(), loadReviews(), loadMetrics(), loadMemory()]);
+  await Promise.all([loadRuns(), loadReviews(), loadMetrics(), loadMemory(), loadDomain()]);
   if (state.runId) loadDetail(state.runId);
 }
 
 $("signin").addEventListener("click", () => signIn().catch((e) => toast(e.message)));
 $("submit").addEventListener("click", submitRun);
 setInterval(() => { if (state.token) refresh(); }, 4000);
+loadDomain().catch(() => {});
 signIn().catch(() => toast("Start the API, then sign in."));
 </script>
 </body>

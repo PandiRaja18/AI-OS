@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ACTIVE_DOMAIN_FILE = "active.json"
 
 
 class Settings(BaseSettings):
@@ -19,7 +23,25 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
 
     # Path to a domain pack. With none, runs use the built-in audit demo.
+    # Normally set by `aios use`, which records it in the workspace rather than
+    # asking anyone to manage an environment variable.
     domain_file: Path | None = None
+
+    @model_validator(mode="after")
+    def _adopt_active_domain(self) -> "Settings":
+        """Fall back to the domain `aios use` selected.
+
+        An explicit value - a constructor argument or AIOS_DOMAIN_FILE - always
+        wins, so a one-off run can point somewhere else without disturbing the
+        workspace default.
+        """
+        if "domain_file" not in self.model_fields_set:
+            object.__setattr__(self, "domain_file", read_active_domain(self.workspace))
+        return self
+
+    @property
+    def active_domain_pointer(self) -> Path:
+        return self.workspace / ACTIVE_DOMAIN_FILE
 
     # Which model backs a live run: "claude" or "local". A self-hosted server is
     # reached through its OpenAI-compatible endpoint, or Ollama's native one.
@@ -77,3 +99,26 @@ class Settings(BaseSettings):
         """Create every directory the platform writes to."""
         for path in (self.workspace, self.trace_dir, self.report_dir):
             path.mkdir(parents=True, exist_ok=True)
+
+
+def read_active_domain(workspace: Path) -> Path | None:
+    """The domain `aios use` selected, or None for the built-in demo."""
+    pointer = workspace / ACTIVE_DOMAIN_FILE
+    if not pointer.exists():
+        return None
+    try:
+        recorded = json.loads(pointer.read_text(encoding="utf-8")).get("domain_file")
+    except (OSError, json.JSONDecodeError):
+        return None
+    return Path(recorded) if recorded else None
+
+
+def write_active_domain(workspace: Path, domain_file: Path | None) -> None:
+    """Record which domain subsequent commands should use."""
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ACTIVE_DOMAIN_FILE).write_text(
+        json.dumps(
+            {"domain_file": str(domain_file) if domain_file else None}, indent=2
+        ),
+        encoding="utf-8",
+    )

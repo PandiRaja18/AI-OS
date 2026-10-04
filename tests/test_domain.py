@@ -310,3 +310,95 @@ def test_grants_are_derived_from_the_tools_a_domain_publishes(
 def test_without_a_pack_the_demo_registry_is_used(settings: Settings):
     names = {tool.name for tool in build_run_tools(settings, "run-test")}
     assert "ledger_lookup" in names and "describe_schema" not in names
+
+
+# --- choosing a domain without touching configuration -------------------------
+
+
+def test_the_active_domain_survives_without_an_environment_variable(
+    settings: Settings, tmp_path: Path, user_folder: Path
+):
+    """`aios use` records the choice so serve, run and worker all honour it."""
+    from aios.config import Settings as FreshSettings, write_active_domain
+    from aios.domain import scaffold_from_folder
+
+    pack = scaffold_from_folder(
+        "mine", tmp_path / "mine.toml", user_folder, settings.workspace
+    )
+    write_active_domain(settings.workspace, pack)
+
+    reloaded = FreshSettings(_env_file=None, workspace=settings.workspace)
+    assert reloaded.domain_file == pack
+
+
+def test_an_explicit_domain_overrides_the_recorded_one(
+    settings: Settings, tmp_path: Path
+):
+    from aios.config import Settings as FreshSettings, write_active_domain
+
+    write_active_domain(settings.workspace, tmp_path / "recorded.toml")
+    chosen = FreshSettings(
+        _env_file=None, workspace=settings.workspace, domain_file=tmp_path / "one-off.toml"
+    )
+    assert chosen.domain_file == tmp_path / "one-off.toml"
+
+
+def test_going_back_to_the_demo_clears_the_choice(settings: Settings, tmp_path: Path):
+    from aios.config import Settings as FreshSettings, write_active_domain
+
+    write_active_domain(settings.workspace, tmp_path / "mine.toml")
+    write_active_domain(settings.workspace, None)
+
+    assert FreshSettings(_env_file=None, workspace=settings.workspace).domain_file is None
+
+
+def test_switching_domains_revokes_the_previous_tools(
+    settings: Settings, tmp_path: Path, user_folder: Path
+):
+    """A stale grant makes the stored policy lie about what a tenant can reach."""
+    from aios.config import write_active_domain
+    from aios.domain import scaffold_from_folder
+    from aios.platform import Platform, TenantPolicy
+
+    demo = Platform(settings, database_url=f"sqlite:///{tmp_path / 'p.db'}")
+    demo.provision_tenant(TenantPolicy(tenant_id="acme"), from_domain=False)
+    assert "ledger_lookup" in {g.tool for g in demo.policy.grants("acme")}
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "policy.md").write_text("Approval above 25,000.", encoding="utf-8")
+    pack = scaffold_from_folder("docs", tmp_path / "d.toml", docs, settings.workspace)
+    write_active_domain(settings.workspace, pack)
+
+    switched = Platform(
+        settings.model_copy(update={"domain_file": pack}),
+        database_url=f"sqlite:///{tmp_path / 'p.db'}",
+    )
+    switched.provision_tenant(TenantPolicy(tenant_id="acme"))
+    tools = {grant.tool for grant in switched.policy.grants("acme")}
+
+    assert "ledger_lookup" not in tools, "a tool the domain no longer has must go"
+    assert tools == {"doc_search", "render_report", "record_signoff"}
+
+
+def test_the_platform_reports_which_data_is_live(settings: Settings, tmp_path: Path):
+    from aios.platform import Platform
+
+    demo = Platform(settings, database_url=f"sqlite:///{tmp_path / 'a.db'}")
+    assert demo.active_domain()["is_demo"] is True
+
+    docs = tmp_path / "docs2"
+    docs.mkdir()
+    (docs / "notes.md").write_text("Something to read.", encoding="utf-8")
+    from aios.domain import scaffold_from_folder
+
+    pack = scaffold_from_folder("mine", tmp_path / "m.toml", docs, settings.workspace)
+    mine = Platform(
+        settings.model_copy(update={"domain_file": pack}),
+        database_url=f"sqlite:///{tmp_path / 'b.db'}",
+    )
+    reported = mine.active_domain()
+
+    assert reported["is_demo"] is False
+    assert reported["name"] == "mine"
+    assert "doc_search" in reported["tools"]

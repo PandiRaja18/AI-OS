@@ -217,6 +217,7 @@ def create_app(platform: Platform, allow_dev_tokens: bool = True) -> FastAPI:
         runs = platform.runs.list(caller.tenant_id, limit=200)
         completed = [r for r in runs if r.status is RunStatus.COMPLETED]
         return {
+            "domain": platform.active_domain(),
             "queue_depth": platform.queue.depth(caller.tenant_id),
             "runs_total": len(runs),
             "runs_by_status": {
@@ -256,7 +257,11 @@ def create_app(platform: Platform, allow_dev_tokens: bool = True) -> FastAPI:
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
-        return {"ok": True, "queue_depth": platform.queue.depth()}
+        return {
+            "ok": True,
+            "queue_depth": platform.queue.depth(),
+            "domain": platform.active_domain(),
+        }
 
     # --- dev conveniences -----------------------------------------------------
 
