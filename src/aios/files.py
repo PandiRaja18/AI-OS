@@ -27,6 +27,7 @@ DOCUMENTS = {".md", ".txt", ".pdf", ".docx", ".rst", ".log"}
 READABLE = TABULAR | DOCUMENTS
 
 MAX_ROWS_PER_TABLE = 200_000
+REPLACEMENT_CHAR = "\ufffd"
 WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
@@ -203,8 +204,11 @@ def _create(
 
 
 def _unprintable(value: str) -> bool:
-    """True when text contains control or replacement characters."""
-    return any(ord(ch) < 32 and ch not in "	" or ch == "�" for ch in value)
+    """True when text holds control or replacement characters."""
+    return any(
+        (ord(char) < 32 and char != "\t") or char == REPLACEMENT_CHAR
+        for char in value
+    )
 
 
 def _fit(row: list, width: int) -> list:

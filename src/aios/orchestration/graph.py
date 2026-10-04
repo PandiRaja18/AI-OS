@@ -126,12 +126,16 @@ def _schedule_node(deps: Deps):
                     EventKind.CONFLICT_DETECTED,
                     f"{conflict.subject}.{conflict.metric} contested: {conflict.values}",
                     conflict_id=conflict_id,
+                    subject=conflict.subject,
+                    metric=conflict.metric,
                 )
             elif conflict.status is ConflictStatus.RESOLVED:
                 deps.trace.emit(
                     EventKind.CONFLICT_RESOLVED,
                     f"{conflict.subject}.{conflict.metric}: {conflict.resolution}",
                     conflict_id=conflict_id,
+                    subject=conflict.subject,
+                    metric=conflict.metric,
                 )
 
         merged = {**known, **changed}
@@ -146,6 +150,8 @@ def _schedule_node(deps: Deps):
                     EventKind.CONFLICT_ESCALATED,
                     f"{conflict.subject}.{conflict.metric}: {escalated.resolution}",
                     conflict_id=conflict_id,
+                    subject=conflict.subject,
+                    metric=conflict.metric,
                 )
         return {"conflicts": changed} if changed else {}
 

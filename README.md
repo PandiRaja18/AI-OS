@@ -2,40 +2,58 @@
 
 <p align="center">
   <b>A LangGraph-based multi-agent orchestration platform.</b><br/>
-  Give it a fuzzy enterprise goal. It plans a task graph, runs agents in parallel,<br/>
-  reconciles what they disagree on, survives tools being down, and stops for a human<br/>
-  before anything becomes durable knowledge.
+  Give it a fuzzy, high-level goal. It decomposes the goal into a task graph,<br/>
+  runs specialised agents in parallel, reconciles what they disagree on,<br/>
+  survives tools being down, and produces a human-reviewable output.
 </p>
 
 <p align="center">
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white">
   <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-1.2-1c3c3c">
-  <img alt="Claude" src="https://img.shields.io/badge/Claude-Opus%205-d97757">
-  <img alt="tests" src="https://img.shields.io/badge/tests-58%20passing-3fb950">
-  <img alt="offline demo" src="https://img.shields.io/badge/demo-runs%20offline-8957e5">
+  <img alt="tests" src="https://img.shields.io/badge/tests-129%20passing-3fb950">
+  <img alt="runs offline" src="https://img.shields.io/badge/demo-no%20API%20key-8957e5">
+  <img alt="your own data" src="https://img.shields.io/badge/your%20data-one%20command-58a6ff">
 </p>
 
-<p align="center"><img src="docs/assets/trace.svg" alt="A real run trace: planning, parallel dispatch, retry, conflict reconciliation, degradation, human sign-off, memory promotion" width="100%"></p>
+<p align="center"><img src="docs/assets/trace.svg" alt="A real run: planning, parallel dispatch, a contradiction found and reconciled, human sign-off, memory promotion" width="100%"></p>
 
-<p align="center"><sub>An actual run, not a mockup — generated from <code>.aios/traces/&lt;run_id&gt;.jsonl</code> by <a href="tools/trace_to_svg.py"><code>tools/trace_to_svg.py</code></a>.</sub></p>
+<p align="center"><sub>An actual run, not a mockup — generated from a trace file by <a href="tools/trace_to_svg.py"><code>tools/trace_to_svg.py</code></a>.</sub></p>
 
 ---
 
-## What just happened in that trace
+## The problem it solves, in one example
 
-Seven lines in there are the whole project. In order:
+A support team. **Urgent problems must be fixed within 7 days.**
 
-| # | Trace line | What it proves |
-|---|---|---|
-| 1 | `plan` — 6 tasks | The goal was decomposed into a **validated DAG**. Cycles, unknown dependencies and unknown agents are rejected and the planner is re-prompted with the reason. |
-| 2 | `dispatch: t3, t4, t5` | **Three agents running at once.** LangGraph `Send` fan-out, one branch per ready task, merged back through a state reducer — not a for-loop. |
-| 3 | `tool_error … 503` → `task_retry` | The ledger service is down. The **agent does not decide** what to do about it: it reports, and the coordinator applies bounded retry with backoff. It succeeds on attempt 3. |
-| 4 | `conflict_detected` | The warehouse says Northwind's unapproved exposure is **55,700 USD**; the prior-quarter memo says **82,600 USD**. Nothing silently picks a winner. |
-| 5 | `re-querying t3_vendor_precedent` → `conflict_resolved` | The **least confident claimant** is re-queried with the contradiction as context. It finds the memo figure is FY-to-date, not single-quarter. Resolved, reason recorded. |
-| 6 | `task_degraded` | The benchmark provider never came back. Non-critical, so the run **continues degraded** rather than failing — and the gap is named in the report. |
-| 7 | `signoff_requested` → `signoff_recorded` → `memory_promote` | The graph **stops at a checkpoint**, not a prompt loop. After approval, four findings are promoted to durable memory with provenance back to this run. |
+- The **live list of problems** says **8 are overdue**, and Payments has **3** of them.
+- **Last Monday's summary** says only **4** are overdue, and nobody needs telling.
 
-Note the sequence numbers run 1 → 74 unbroken across the pause. `signoff_requested` at 68 and `signoff_recorded` at 71 happened in **different processes**: the run was suspended to disk and resumed.
+The rule is that any team with 3 or more overdue problems is **reported to the
+director**. So the two sources disagree, and the disagreement decides whether
+the director gets told.
+
+That is the whole project. Five lines of the trace above:
+
+| Trace line | What it proves |
+|---|---|
+| `plan — 4 tasks` | A sentence became a **validated task graph**. Cycles, unknown dependencies and unknown agents are rejected, and the planner is re-prompted with the reason. |
+| `dispatch: t2_live_count, t3_last_summary` | **Two agents at once.** LangGraph `Send` fan-out, one branch per ready task, merged through a state reducer — not a for-loop. |
+| `conflict_detected … 8 vs 4` | Two sources disagree about the same number. **Nothing silently picks a winner.** |
+| `re-querying t3_last_summary` → `conflict_resolved` | It re-queries the **less confident** source, which finds the summary was written Monday at 08:00, before four more problems went overdue. Resolved, with the reason recorded. |
+| `signoff_requested` → `memory_promote` | The run **stops at a checkpoint**, not a prompt loop. Only after a human approves do those findings become durable facts the next run recalls. |
+
+Nothing here needs special knowledge. The `audit` scenario shows more machinery —
+a flaky tool that recovers, a dead tool that degrades the run, a replan that
+routes around it — but it needs you to know what a control exception is.
+| `plan — 4 tasks` | A sentence became a **validated DAG**. Cycles, unknown dependencies and unknown agents are rejected and the planner is re-prompted with the reason. |
+| `dispatch: t2_live_breaches, t3_last_report` | **Two agents at once.** LangGraph `Send` fan-out, one branch per ready task, merged through a state reducer — not a for-loop. |
+| `conflict_detected … {'t2': '8', 't3': '4'}` | Two sources disagree about the same number. **Nothing silently picks a winner.** |
+| `re-querying t3_last_report` → `conflict_resolved` | The **least confident** claimant is re-queried with the contradiction attached. It finds the report was a Monday 08:00 snapshot taken before four tickets aged out. Resolved, with the reason recorded. |
+| `signoff_requested` → `memory_promote` | The graph **stops at a checkpoint**, not a prompt loop. Only after a human approves do those findings become durable facts the next run recalls. |
+
+Nothing here needs domain knowledge. The `audit` scenario shows more machinery —
+a flaky tool that recovers, a dead tool that degrades the run, a replan that
+routes around it — but needs you to know what a control exception is.
 
 ---
 
@@ -60,11 +78,13 @@ aios serve                     # the console now reads your data, not the demo
 The console header shows `domain: my-files` so you can always tell which data is
 live. See [docs/your-own-data.md](docs/your-own-data.md).
 
-`--offline` replays recorded model responses, so it needs **no API key** and produces
-the same trace every time. The graph, scheduler, agents, gateway, tools, memory and
-checkpointer are all the real ones — only the model calls are replayed.
+Only the **model's replies** are replayed. The graph, scheduler, agents,
+gateway, memory and checkpointer are the real ones, and the tools really run —
+that SQL really executes, those documents are really parsed. Change a row in
+`data/support/tickets.csv` and the numbers change.
 
-For a live run, export `ANTHROPIC_API_KEY` and drop `--offline`.
+For a live run, export `ANTHROPIC_API_KEY`, or point at a self-hosted model with
+[docs/self-hosted-model.md](docs/self-hosted-model.md).
 
 ```bash
 aios runs                       # the run index
@@ -79,7 +99,7 @@ aios resume <run_id> --approve  # finish a paused run, any time, any shell
 
 ```mermaid
 flowchart TB
-    GOAL["goal: 'Prepare the FY26-Q3 quarterly audit review'"] --> PLAN
+    GOAL["goal: 'Report SLA breaches for the weekly review'"] --> PLAN
 
     subgraph GRAPH["LangGraph state machine · every transition checkpointed"]
         direction LR
@@ -236,15 +256,26 @@ regenerates them.
 
 ## Docs
 
-- [**docs/your-own-data.md**](docs/your-own-data.md) — point it at your own
-  folder of spreadsheets and documents, with a local model. No Python edits.
+**Start here**
+
+- [**ARCHITECTURE.md**](ARCHITECTURE.md) — what the engine is, where it ends, and
+  what is scaffolding around it. Read this if the repository looks bigger than
+  its idea.
+- [**docs/live-demo.md**](docs/live-demo.md) — demoing it, including on data you
+  have never seen, and what to say when it breaks.
+
+**Using it**
+
+- [**docs/your-own-data.md**](docs/your-own-data.md) — your folder of
+  spreadsheets, PDFs and Word documents. Two commands, no Python.
 - [**docs/self-hosted-model.md**](docs/self-hosted-model.md) — vLLM, Ollama,
-  llama.cpp: schema handling, model sizing, troubleshooting
-- [**docs/production-design.md**](docs/production-design.md) — how this becomes a
-  service: stores, queue and leases, scaling, cost model, rollout phases
-- [**docs/demo-script.md**](docs/demo-script.md) — a 10-minute walkthrough with
-  talking points
-- [**docs/design.md**](docs/design.md) — the original high-level design
+  llama.cpp: schema handling, model sizing, troubleshooting.
+
+**Going further — optional**
+
+- [**docs/README.md**](docs/README.md) — what hosting it
+  for many users takes: queue, leases, tenancy, budgets, cost model.
+- [**docs/design.md**](docs/design.md) — the original high-level design.
 
 ---
 
@@ -264,5 +295,5 @@ Stated plainly, because a demo that hides its edges isn't worth trusting.
   off a number the model reports about itself. Until it's calibrated against outcomes
   it's a heuristic — which is exactly why the human gate is mandatory.
 - **Single process, one run at a time.** No queue, no multi-tenancy, no auth beyond
-  principal typing. [The production design](docs/production-design.md) covers what
+  principal typing. [The production design](docs/README.md) covers what
   changes, and why the orchestration logic doesn't have to.

@@ -167,7 +167,7 @@ class Planner:
             EventKind.PLAN,
             f"{len(plan.tasks)} tasks: {plan.rationale}",
             actor=AgentType.PLANNER.value,
-            task_ids=[task.task_id for task in plan.tasks],
+            tasks=[_outline(task) for task in plan.tasks],
         )
         return {task.task_id: task.to_task() for task in plan.tasks}
 
@@ -186,6 +186,7 @@ class Planner:
             f"revision {revision}: {plan.rationale}",
             actor=AgentType.PLANNER.value,
             reason=reason,
+            tasks=[_outline(task) for task in plan.tasks],
         )
         return _merge_revision(tasks, plan, revision)
 
@@ -220,6 +221,18 @@ class Planner:
                     "Return a corrected plan."
                 )
         raise InvalidPlan(last_error)
+
+
+def _outline(task: PlannedTask) -> dict:
+    """Shape of a task for the trace, so a graph can be rebuilt from events."""
+    return {
+        "task_id": task.task_id,
+        "description": task.description,
+        "agent": task.agent.value,
+        "depends_on": list(task.depends_on),
+        "critical": task.critical,
+        "requires_signoff": task.requires_signoff,
+    }
 
 
 def _merge_revision(

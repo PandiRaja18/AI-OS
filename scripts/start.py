@@ -23,6 +23,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aios.config import Settings  # noqa: E402
+from aios.config import write_active_domain  # noqa: E402
+from aios.demo.support import build_support_demo  # noqa: E402
 from aios.domain import DomainPack, scaffold_from_folder  # noqa: E402
 from aios.files import inventory  # noqa: E402
 from aios.llm import LlmError  # noqa: E402
@@ -37,7 +39,8 @@ GREEN, RED, YELLOW, DIM, BOLD, OFF = (
     "\033[32m", "\033[31m", "\033[33m", "\033[90m", "\033[1m", "\033[0m"
 )
 
-DEMO_GOAL = "Prepare the FY26-Q3 quarterly audit review"
+DEMO_GOAL = "Which urgent problems are overdue, and who needs telling?"
+AUDIT_GOAL = "Prepare the FY26-Q3 quarterly audit review"
 step_number = 0
 
 
@@ -72,12 +75,12 @@ def follow(platform: Platform, tenant: str, run_id: str, stop) -> None:
 
 
 def execute(platform: Platform, tenant: str, reviewer: str, goal: str,
-            offline: bool, approve: bool) -> int:
+            offline: bool, approve: bool, scenario: str = "support") -> int:
     """Submit, watch, pause at the gate, optionally approve, show the report."""
     import threading
 
     operator = platform.tokens.resolve(platform.token_for(tenant, "operator"))
-    record = platform.submit(operator, goal, offline=offline)
+    record = platform.submit(operator, goal, offline=offline, scenario=scenario)
     print(f"   {DIM}run {record.run_id}{OFF}\n")
 
     worker = Worker(platform, "worker-1")
@@ -130,35 +133,53 @@ def execute(platform: Platform, tenant: str, reviewer: str, goal: str,
 
 
 def run_demo(args) -> int:
-    print(f"{BOLD}AI-OS — demo mode{OFF}")
+    scenario = "audit" if args.audit else "support"
+    print(f"{BOLD}AI-OS - demo mode{OFF}")
     print(f"{DIM}Recorded model answers, real engine. No API key or model needed.{OFF}")
 
-    step("Build the demo dataset", "synthetic vendors, transactions and policies")
-    subprocess.run([sys.executable, "-m", "aios.cli", "seed"], check=True)
-
-    settings = Settings(injected_ledger_failures=2)
+    settings = Settings()
     settings.ensure_dirs()
+
+    if scenario == "support":
+        step("Build a support desk to look at",
+             "a list of support problems, the policy, and last week's summary")
+        folder, pack = build_support_demo(settings)
+        write_active_domain(settings.workspace, pack)
+        ok(f"{folder} -> domain 'support'")
+        print(f"   {DIM}Urgent problems must be fixed in 7 days. The live list says 8"
+              f" are overdue.{OFF}")
+        print(f"   {DIM}Last Monday's summary says 4. Watch what it does with"
+              f" that.{OFF}")
+        settings = Settings()
+    else:
+        step("Build the audit dataset", "synthetic vendors, transactions and policies")
+        subprocess.run([sys.executable, "-m", "aios.cli", "seed"], check=True)
+        write_active_domain(settings.workspace, None)
+        settings = Settings(injected_ledger_failures=2)
+
     platform = Platform(settings)
 
     step("Create a tenant", "so the run has an owner, a budget and a reviewer")
     platform.provision_tenant(
         TenantPolicy(tenant_id="demo", name="Demo", max_concurrent_runs=4,
                      reviewers=("cfo",)),
-        from_domain=False,
+        from_domain=(scenario == "support"),
     )
     ok("tenant 'demo', reviewer 'cfo'")
 
-    step("Run the goal", DEMO_GOAL)
-    code = execute(platform, "demo", "cfo", DEMO_GOAL, offline=True, approve=True)
+    goal = AUDIT_GOAL if scenario == "audit" else DEMO_GOAL
+    step("Run the goal", goal)
+    code = execute(platform, "demo", "cfo", goal, offline=True, approve=True,
+                   scenario=scenario)
 
     step("See it in the browser")
     print(f"   aios serve        {DIM}then open http://127.0.0.1:8000{OFF}")
-    print(f"   python scripts/e2e.py --keep   {DIM}runs 36 checks, leaves the UI up{OFF}")
+    print(f"   {DIM}the other scenario: python scripts/start.py demo --audit{OFF}")
     return code
 
 
 def run_mine(args) -> int:
-    print(f"{BOLD}AI-OS — your own data{OFF}")
+    print(f"{BOLD}AI-OS - your own data{OFF}")
     folder = Path(args.folder).resolve()
     pack_path = Path(args.domain) if args.domain else folder.parent / "domain.toml"
 
@@ -231,6 +252,8 @@ def main() -> int:
     modes = parser.add_subparsers(dest="mode", required=True)
 
     demo = modes.add_parser("demo", help="run the built-in demo, no setup needed")
+    demo.add_argument("--audit", action="store_true",
+                      help="run the richer audit scenario instead")
     demo.set_defaults(handler=run_demo)
 
     mine = modes.add_parser("mine", help="run against your own folder of files")

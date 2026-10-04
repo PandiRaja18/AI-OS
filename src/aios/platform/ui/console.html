@@ -102,6 +102,70 @@
   .k-conflict_detected, .k-conflict_escalated, .k-task_blocked, .k-access_denied { color: var(--red); }
   .k-agent_result, .k-conflict_resolved, .k-signoff_recorded, .k-report { color: var(--green); }
   .k-run_status, .k-run_started { color: var(--dim); }
+  #graph { padding: 14px; overflow-x: auto; }
+  .row {
+    display: flex; gap: 10px; align-items: stretch; margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
+  .node {
+    flex: 1 1 190px; min-width: 190px; max-width: 280px; cursor: pointer;
+    background: var(--bg); border: 1px solid var(--border);
+    border-left: 3px solid var(--border); border-radius: 6px; padding: 8px 10px;
+  }
+  .node:hover { border-color: var(--accent); }
+  .node.selected { border-color: var(--accent); background: #1f6feb18; }
+  .node .id { font-family: var(--mono); font-size: 11px; font-weight: 600; }
+  .node .who {
+    font-family: var(--mono); font-size: 10px; color: var(--faint);
+    display: flex; justify-content: space-between; margin-top: 3px;
+  }
+  .node .bar { height: 3px; border-radius: 2px; background: #30363d; margin-top: 6px; }
+  .node .bar > span { display: block; height: 100%; border-radius: 2px; }
+  .node.done { border-left-color: var(--green); }
+  .node.running { border-left-color: var(--cyan); }
+  .node.degraded { border-left-color: var(--amber); }
+  .node.blocked { border-left-color: var(--red); }
+  .node.superseded { border-left-color: var(--faint); opacity: .55; }
+  .node.awaiting_signoff { border-left-color: var(--amber); }
+  .after {
+    font-family: var(--mono); font-size: 10px; color: var(--faint);
+    text-align: center; margin: -4px 0 6px;
+  }
+  .nodepanel {
+    border-top: 1px solid var(--border); padding: 0 14px; font-size: 12px;
+  }
+  .nodepanel:not(:empty) { padding: 12px 14px; }
+  .nodepanel h3 { margin: 0 0 6px; font-size: 12px; font-family: var(--mono); }
+  .claim {
+    font-family: var(--mono); font-size: 11px; color: var(--text);
+    padding: 2px 0;
+  }
+  .claim b { color: var(--accent); font-weight: 600; }
+  .conflict { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .conflict .head { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .versus { display: flex; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+  .side {
+    flex: 1 1 130px; border: 1px solid var(--border); border-radius: 6px;
+    padding: 7px 9px; background: var(--bg);
+  }
+  .side.kept { border-color: var(--green); }
+  .side.dropped { border-color: var(--faint); opacity: .6; }
+  .side .src { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+  .side .val { font-family: var(--mono); font-size: 16px; font-weight: 600; }
+  .why { font-size: 11.5px; color: var(--dim); }
+  .toggle {
+    float: right; cursor: pointer; font-size: 10px; color: var(--accent);
+    text-transform: none; letter-spacing: 0;
+  }
+  .group { border-bottom: 1px solid var(--border); }
+  .group > summary {
+    cursor: pointer; padding: 7px 14px; font-family: var(--mono); font-size: 11px;
+  }
+  .group > summary::marker { color: var(--faint); }
+  .group .ev { padding-left: 14px; }
+  .bars { display: flex; gap: 12px; padding: 10px 14px; flex-wrap: wrap; }
+  .bars .stat { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .bars .stat b { color: var(--text); }
   .review { padding: 12px 14px; border-bottom: 1px solid var(--border); }
   .review .goal { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
   .review .draft {
@@ -128,7 +192,7 @@
 <header>
   <h1>AI&#8209;OS Console</h1>
   <span class="who" id="who">not signed in</span>
-  <span class="domain demo" id="domain" title="which data runs use">checking…</span>
+  <span class="domain demo" id="domain" title="which data runs use">checking...</span>
   <span class="spacer"></span>
   <div class="metrics" id="metrics"></div>
 </header>
@@ -180,7 +244,21 @@
 
   <div>
     <section class="panel">
-      <h2 id="traceTitle">Trace</h2>
+      <h2 id="graphTitle">Task graph</h2>
+      <div id="graph"><div class="empty">Select a run to see its task graph.</div></div>
+      <div id="node" class="nodepanel"></div>
+    </section>
+
+    <section class="panel" style="margin-top:14px">
+      <h2>Disagreements</h2>
+      <div id="conflicts"><div class="empty">None found.</div></div>
+    </section>
+
+    <section class="panel" style="margin-top:14px">
+      <h2 id="traceTitle">
+        Reasoning
+        <span class="toggle" id="groupToggle">group by task</span>
+      </h2>
       <div id="trace"><div class="empty">Select a run to follow its trace.</div></div>
     </section>
     <section class="panel" style="margin-top:14px">
@@ -204,7 +282,10 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const state = { token: null, principal: null, runId: null, stream: null, seq: 0 };
+const state = {
+  token: null, principal: null, runId: null, stream: null, seq: 0,
+  view: null, grouped: false,
+};
 const $ = (id) => document.getElementById(id);
 
 function toast(message) {
@@ -284,7 +365,7 @@ async function loadRuns() {
           ${statusPill(run.status)}
         </div>
         <div class="meta">
-          <span>${run.lane} · $${Number(run.spend.currency).toFixed(4)}</span>
+          <span>${run.lane} - $${Number(run.spend.currency).toFixed(4)}</span>
           <span>${run.worker_id || ""}</span>
         </div>
       </li>`
@@ -309,7 +390,7 @@ function renderEvent(event) {
 async function select(runId) {
   state.runId = runId;
   state.seq = 0;
-  $("traceTitle").textContent = `Trace · ${runId}`;
+  $("traceTitle").textContent = `Trace - ${runId}`;
   $("trace").innerHTML = "";
   if (state.stream) state.stream.close();
   await loadRuns();
@@ -321,6 +402,7 @@ async function select(runId) {
   box.scrollTop = box.scrollHeight;
   follow(runId);
   loadDetail(runId);
+  loadView(runId);
 }
 
 function follow(runId) {
@@ -340,8 +422,129 @@ function follow(runId) {
   state.stream.addEventListener("end", () => {
     state.stream.close();
     refresh();
+    if (state.runId) loadView(state.runId);
   });
   state.stream.onerror = () => state.stream.close();
+}
+
+function renderGraph(view) {
+  const box = $("graph");
+  if (!view.tasks.length) {
+    box.innerHTML = '<div class="empty">No plan yet.</div>';
+    return;
+  }
+  const rows = [];
+  view.tasks.forEach((task) => {
+    (rows[task.depth] = rows[task.depth] || []).push(task);
+  });
+
+  box.innerHTML = rows
+    .map((row, depth) => {
+      const after = row[0].depends_on.length
+        ? `<div class="after">after ${row[0].depends_on.map(short).join(", ")}</div>`
+        : "";
+      const cards = row
+        .map((task) => {
+          const width = Math.round((task.confidence || 0) * 100);
+          const colour = task.confidence >= 0.8 ? "var(--green)" : "var(--amber)";
+          return `<div class="node ${task.state}" data-task="${task.task_id}">
+            <div class="id">${escapeHtml(task.task_id)}</div>
+            <div class="who"><span>${escapeHtml(task.agent)}</span>
+              <span>${task.state}${task.attempts > 1 ? ` - ${task.attempts} tries` : ""}</span></div>
+            <div class="bar"><span style="width:${width}%;background:${colour}"></span></div>
+          </div>`;
+        })
+        .join("");
+      return (depth ? after : "") + `<div class="row">${cards}</div>`;
+    })
+    .join("");
+
+  box.querySelectorAll(".node").forEach((card) =>
+    card.addEventListener("click", () => selectNode(view, card.dataset.task))
+  );
+  $("graphTitle").innerHTML =
+    `Task graph <span class="toggle">${view.tasks.length} tasks - ` +
+    `${view.tool_calls} tool calls - ${view.model_calls} model calls</span>`;
+}
+
+function selectNode(view, taskId) {
+  const task = view.tasks.find((candidate) => candidate.task_id === taskId);
+  if (!task) return;
+  document.querySelectorAll(".node").forEach((card) =>
+    card.classList.toggle("selected", card.dataset.task === taskId)
+  );
+  const claims = task.claims.length
+    ? task.claims
+        .map(
+          (claim) =>
+            `<div class="claim">${escapeHtml(claim.subject)}.${escapeHtml(claim.metric)} = <b>${escapeHtml(claim.value)}</b></div>`
+        )
+        .join("")
+    : '<div class="why">No claims.</div>';
+  $("node").innerHTML = `
+    <h3>${escapeHtml(task.task_id)} - ${escapeHtml(task.agent)}</h3>
+    <div class="why">${escapeHtml(task.description || "")}</div>
+    <div class="why" style="margin:6px 0">${escapeHtml(task.summary || task.error || "")}</div>
+    ${claims}
+    <div class="why" style="margin-top:6px">
+      tools: ${task.tools.map(escapeHtml).join(", ") || "none"} -
+      evidence: ${task.evidence.map(escapeHtml).join(", ") || "none"} -
+      ${task.attempts} attempt(s)
+      ${task.confidence != null ? ` - confidence ${task.confidence}` : ""}
+    </div>`;
+}
+
+function renderConflicts(view) {
+  const box = $("conflicts");
+  if (!view.conflicts.length) {
+    box.innerHTML = '<div class="empty">No disagreements in this run.</div>';
+    return;
+  }
+  box.innerHTML = view.conflicts
+    .map((conflict) => {
+      const entries = Object.entries(conflict.values);
+      const sides = entries
+        .map(([task, value]) => {
+          const kept = conflict.state === "resolved" && task !== conflict.requeried;
+          const cls = conflict.state === "resolved" ? (kept ? "kept" : "dropped") : "";
+          return `<div class="side ${cls}">
+            <div class="src">${escapeHtml(short(task))}</div>
+            <div class="val">${escapeHtml(value)}</div>
+          </div>`;
+        })
+        .join('<div class="side" style="flex:0 0 auto;border:0;background:none">vs</div>');
+      return `<div class="conflict">
+        <div class="head">${escapeHtml(conflict.subject)}.${escapeHtml(conflict.metric)}
+          <span class="pill ${conflict.state === "resolved" ? "completed" : "failed"}">${conflict.state}</span></div>
+        <div class="versus">${sides}</div>
+        <div class="why">${escapeHtml(conflict.resolution || "Not settled yet.")}</div>
+      </div>`;
+    })
+    .join("");
+}
+
+function renderGrouped(view) {
+  const box = $("trace");
+  box.innerHTML = Object.entries(view.events_by_task)
+    .map(
+      ([taskId, events]) => `<details class="group">
+        <summary>${escapeHtml(taskId)} - ${events.length} events</summary>
+        ${events.map((event) => renderEvent(event)).join("")}
+      </details>`
+    )
+    .join("");
+}
+
+function short(taskId) {
+  return String(taskId).split("_")[0];
+}
+
+async function loadView(runId) {
+  const view = await api(`/v1/runs/${runId}/view`);
+  state.view = view;
+  renderGraph(view);
+  renderConflicts(view);
+  if (state.grouped) renderGrouped(view);
 }
 
 async function loadDetail(runId) {
@@ -373,7 +576,7 @@ async function loadReviews() {
         <div class="draft">${escapeHtml(review.draft || "(no draft)")}</div>
         ${
           review.degraded_tasks || review.open_conflicts
-            ? `<div class="warn">${review.degraded_tasks} degraded · ${review.open_conflicts} unresolved conflict(s)</div>`
+            ? `<div class="warn">${review.degraded_tasks} degraded - ${review.open_conflicts} unresolved conflict(s)</div>`
             : ""
         }
         <div class="row">
@@ -453,7 +656,7 @@ async function loadMemory() {
           ${escapeHtml(fact.subject)}.${escapeHtml(fact.metric)}
         </div>
         <div style="font-size:12px">${escapeHtml(fact.value)}
-          <span style="color:var(--faint)"> · ${fact.confidence} · ${escapeHtml(fact.provenance)}</span>
+          <span style="color:var(--faint)"> - ${fact.confidence} - ${escapeHtml(fact.provenance)}</span>
         </div>
       </div>`
     )
@@ -474,6 +677,13 @@ async function refresh() {
 
 $("signin").addEventListener("click", () => signIn().catch((e) => toast(e.message)));
 $("submit").addEventListener("click", submitRun);
+$("groupToggle").addEventListener("click", () => {
+  state.grouped = !state.grouped;
+  $("groupToggle").textContent = state.grouped ? "show as timeline" : "group by task";
+  if (!state.view) return;
+  if (state.grouped) renderGrouped(state.view);
+  else select(state.runId);
+});
 setInterval(() => { if (state.token) refresh(); }, 4000);
 loadDomain().catch(() => {});
 signIn().catch(() => toast("Start the API, then sign in."));

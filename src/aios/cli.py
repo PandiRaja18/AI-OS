@@ -95,7 +95,7 @@ def _task_table(tasks: dict[str, Task]) -> Table:
 
 
 def _elide(text: str, width: int = 160) -> str:
-    return text if len(text) <= width else text[: width - 1] + "…"
+    return text if len(text) <= width else text[: width - 1] + "..."
 
 
 def _report_outcome(outcome: RunOutcome) -> None:
@@ -559,7 +559,7 @@ def domain_check(
         console.print(f"[red]{path}: {error}[/red]")
         raise typer.Exit(code=1) from error
 
-    console.print(f"[bold]{pack.name}[/bold] — {pack.description or 'no description'}")
+    console.print(f"[bold]{pack.name}[/bold] - {pack.description or 'no description'}")
     problems = pack.check()
 
     if pack.data_source is not None:
