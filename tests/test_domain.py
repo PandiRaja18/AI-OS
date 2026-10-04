@@ -10,7 +10,14 @@ import pytest
 from pydantic import ValidationError
 
 from aios.config import Settings
-from aios.domain import DataSource, DomainPack, NamedQuery, scaffold
+from aios.domain import (
+    DataSource,
+    DomainPack,
+    InvalidPack,
+    NamedQuery,
+    scaffold,
+    scaffold_from_folder,
+)
 from aios.files import ingest_folder, inventory, read_docx, read_document
 from aios.mcp_gateway import McpGateway, Principal, ToolAccessDenied, build_run_tools
 from aios.mcp_gateway.domain_tools import UnsafeQuery, assert_read_only
@@ -147,6 +154,55 @@ def test_check_reports_what_would_break_at_runtime(tmp_path: Path):
 def test_a_scaffolded_pack_parses(tmp_path: Path):
     path = scaffold("mydomain", tmp_path / "domain.toml")
     assert "mydomain" in path.read_text(encoding="utf-8")
+
+
+def test_a_windows_path_in_double_quotes_says_what_to_change(tmp_path: Path):
+    """TOML reads a backslash as an escape, and the raw error is unactionable."""
+    path = tmp_path / "windows.toml"
+    path.write_text(
+        'name = "x"\n\n[documents]\npath = "C:\\work\\pdfs"\n', encoding="utf-8"
+    )
+    with pytest.raises(InvalidPack) as raised:
+        DomainPack.load(path)
+
+    message = str(raised.value)
+    assert "Unescaped" in message
+    assert 'path = "C:/work/data"' in message, "it must show the forward-slash form"
+    assert "single quotes" in message
+
+
+def test_a_windows_path_in_single_quotes_is_accepted(tmp_path: Path):
+    path = tmp_path / "literal.toml"
+    path.write_text(
+        "name = \"x\"\n\n[documents]\npath = 'C:\\work\\pdfs'\n", encoding="utf-8"
+    )
+    assert DomainPack.load(path).documents.path == "C:\\work\\pdfs"
+
+
+def test_a_documents_only_folder_generates_a_usable_pack(tmp_path: Path):
+    """A folder of PDFs has nothing to query, so the pack declares no data."""
+    folder = tmp_path / "pdfs"
+    folder.mkdir()
+    (folder / "policy.md").write_text("Dual approval above 25,000.", encoding="utf-8")
+
+    path = scaffold_from_folder("docs", tmp_path / "d.toml", folder, tmp_path / "ws")
+    generated = DomainPack.load(path)
+
+    assert generated.check() == []
+    assert generated.data_source is None, "no spreadsheets means no data source"
+    assert generated.documents is not None
+    assert "Never assign a task to the data agent" in generated.capabilities.data
+
+
+def test_a_folder_with_spreadsheets_still_gets_a_data_source(
+    user_folder: Path, tmp_path: Path
+):
+    path = scaffold_from_folder("mixed", tmp_path / "m.toml", user_folder, tmp_path / "ws")
+    generated = DomainPack.load(path)
+
+    assert generated.check() == []
+    assert generated.data_source is not None
+    assert generated.queries, "a starter query per table"
 
 
 def test_a_usable_pack_reports_no_problems(pack: DomainPack):

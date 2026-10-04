@@ -87,9 +87,35 @@ GROUP BY supplier ORDER BY total DESC
 """
 ```
 
+**Windows paths need care.** TOML treats `\` as an escape character, so
+`path = "C:\work\data"` fails with `Unescaped '\' in a string`. Write it either
+way below — forward slashes work fine on Windows:
+
+```toml
+path = "C:/work/data"      # forward slashes
+path = 'C:\work\data'      # single quotes: a TOML literal string
+```
+
 **`capabilities` is the one people get wrong.** The planner writes tasks against
 that description. If it claims an agent can reach something it cannot, the
 planner produces tasks that are guaranteed to fail.
+
+**Documents only, no spreadsheets?** Omit the `[data_source]` block entirely and
+tell the planner there is no database, or it will write tasks for a data agent
+that has no tools:
+
+```toml
+[capabilities]
+research = "the PDF documents in this folder, via doc_search"
+data = "NOTHING. No database is configured. Never assign a task to the data agent."
+reporting = "synthesis of the research agent's findings"
+
+[documents]
+path = "C:/work/review/pdfs"
+```
+
+`aios domain init --from-folder` writes exactly this when it finds no
+spreadsheets.
 
 **Named queries versus ad-hoc.** A named query is a question you have decided
 the data agent may ask; the model supplies parameters and never writes SQL.

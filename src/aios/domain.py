@@ -21,6 +21,28 @@ from aios.files import TABULAR
 SELECT_ONLY = ("select", "with")
 
 
+class InvalidPack(ValueError):
+    """The domain pack could not be read."""
+
+
+def _explain_toml(source: Path, error: Exception) -> str:
+    """Turn a raw TOML error into one that says what to change.
+
+    Every Windows user writes `path = "C:\\work\\data"` at least once, and TOML
+    reads the backslash as an escape. The raw message names a column and
+    nothing else, which is not enough to act on.
+    """
+    message = f"{source}: {error}"
+    if "Unescaped" in str(error) or "escape" in str(error).lower():
+        message += (
+            "\n\nA Windows path needs one of these forms:"
+            '\n    path = "C:/work/data"      forward slashes'
+            "\n    path = 'C:\\work\\data'      single quotes, no escaping"
+            '\nNot: path = "C:\\work\\data"   double quotes treat \\ as an escape'
+        )
+    return message
+
+
 class NamedQuery(BaseModel):
     """One question the data agent is allowed to ask.
 
@@ -136,8 +158,11 @@ class DomainPack(BaseModel):
         source = Path(path)
         if not source.exists():
             raise FileNotFoundError(f"no domain pack at {source}")
-        with source.open("rb") as handle:
-            return cls.model_validate(tomllib.load(handle))
+        try:
+            with source.open("rb") as handle:
+                return cls.model_validate(tomllib.load(handle))
+        except tomllib.TOMLDecodeError as error:
+            raise InvalidPack(_explain_toml(source, error)) from error
 
     def check(self) -> list[str]:
         """Problems that would make this pack useless at runtime."""
@@ -178,6 +203,10 @@ TEMPLATE = '''# Domain pack for "{name}".
 # Point this at your own data, then run:
 #     aios domain check --file {filename}
 #     python scripts/run_real.py "your goal" --domain {filename} --local
+#
+# Paths use forward slashes. In TOML a backslash is an escape character, so a
+# Windows path must be written "C:/work/data" or 'C:\\work\\data' - never
+# "C:\\work\\data", which fails with: Unescaped backslash in a string.
 
 name = "{name}"
 description = "What this domain is for, in one line."
@@ -239,39 +268,57 @@ def scaffold_from_folder(name: str, path: Path, folder: Path, workspace: Path) -
 
     found = inventory(folder)
     ingested = ingest_folder(folder, workspace / "ingested" / f"{name}-scaffold.db")
+    posix = folder.as_posix()
+
+    # With no spreadsheets there is nothing to query, so the pack declares no
+    # data source at all - and the planner has to be told, or it writes tasks
+    # for a data agent that has no tools and every one of them fails.
+    data_reach = (
+        "the spreadsheets in this folder, via describe_schema and named queries"
+        if ingested.tables
+        else "NOTHING. No database is configured. "
+        "Never assign a task to the data agent."
+    )
 
     lines = [
-        f"# Domain pack for \"{name}\", generated from {folder}.",
+        f'# Domain pack for "{name}", generated from {folder}.',
         "#",
         f"# Found {len(found['tabular'])} spreadsheet(s), "
         f"{len(found['documents'])} document(s), "
         f"{len(found['ignored'])} ignored file(s).",
-        "# Edit the queries below to ask the questions your review actually needs.",
+        "#",
+        "# Paths use forward slashes. In TOML a backslash is an escape, so a",
+        "# Windows path must be written \"C:/work/data\" or 'C:\\work\\data'.",
         "",
         f'name = "{name}"',
         'description = "What this domain is for, in one line."',
         "",
         "[capabilities]",
         'research = "the documents in this folder"',
-        'data = "the spreadsheets in this folder, via describe_schema and named queries"',
+        f'data = "{data_reach}"',
         'reporting = "synthesis of the other agents\' results into a reviewable document"',
-        "",
-        "[data_source]",
-        'kind = "files"',
-        f'path = "{folder.as_posix()}"',
-        "# Ad-hoc SELECT runs against an ingested copy, never your files.",
-        "allow_adhoc_queries = true",
-        "",
-        "[documents]",
-        f'path = "{folder.as_posix()}"',
         "",
     ]
 
-    if not ingested.tables:
+    if ingested.tables:
         lines += [
-            "# No spreadsheets were found, so there are no queries to start from.",
-            "# Add .csv or .xlsx files and re-run: aios domain init --from-folder",
+            "[data_source]",
+            'kind = "files"',
+            f'path = "{posix}"',
+            "# Ad-hoc SELECT runs against an ingested copy, never your files.",
+            "allow_adhoc_queries = true",
+            "",
         ]
+    else:
+        lines += [
+            "# No spreadsheets found, so there is no data source and no queries.",
+            "# Add .csv or .xlsx files and re-run: aios domain init --from-folder",
+            "",
+        ]
+
+    if found["documents"]:
+        lines += ["[documents]", f'path = "{posix}"', ""]
+
     for table in ingested.tables:
         columns = ", ".join(table.columns)
         lines += [
