@@ -223,6 +223,10 @@ regenerates them.
 
 ## Docs
 
+- [**docs/your-own-data.md**](docs/your-own-data.md) — point it at your own
+  folder of spreadsheets and documents, with a local model. No Python edits.
+- [**docs/self-hosted-model.md**](docs/self-hosted-model.md) — vLLM, Ollama,
+  llama.cpp: schema handling, model sizing, troubleshooting
 - [**docs/production-design.md**](docs/production-design.md) — how this becomes a
   service: stores, queue and leases, scaling, cost model, rollout phases
 - [**docs/demo-script.md**](docs/demo-script.md) — a 10-minute walkthrough with

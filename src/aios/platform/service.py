@@ -85,8 +85,19 @@ class Platform:
 
     # --- provisioning ---------------------------------------------------------
 
-    def provision_tenant(self, tenant: TenantPolicy) -> TenantPolicy:
-        return provision(self.policy, tenant)
+    def provision_tenant(
+        self, tenant: TenantPolicy, from_domain: bool = True
+    ) -> TenantPolicy:
+        """Create a tenant, granting the tools its configured domain publishes."""
+        tools = None
+        if from_domain and self.settings.domain_file is not None:
+            from aios.domain import load_pack
+            from aios.mcp_gateway import build_run_tools
+
+            tools = build_run_tools(
+                self.settings, "provisioning", pack=load_pack(self.settings)
+            )
+        return provision(self.policy, tenant, tools=tools)
 
     def token_for(
         self,

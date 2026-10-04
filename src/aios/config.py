@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     workspace: Path = Path(".aios")
     data_dir: Path = Path("data")
 
+    # Path to a domain pack. With none, runs use the built-in audit demo.
+    domain_file: Path | None = None
+
     # Which model backs a live run: "claude" or "local". A self-hosted server is
     # reached through its OpenAI-compatible endpoint, or Ollama's native one.
     llm_provider: str = "claude"

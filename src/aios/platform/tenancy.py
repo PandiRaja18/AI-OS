@@ -29,13 +29,45 @@ DEFAULT_GRANTS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
 )
 
 
+def grants_from_tools(tenant_id: str, tools: list[ToolSpec]) -> list[ToolGrant]:
+    """Derive a tenant's grants from the tools a domain actually publishes.
+
+    A tool already declares which agents may call it; provisioning records that
+    as the starting grant, which an administrator can then tighten. Without
+    this, a domain that introduces a new tool would publish it and the gateway
+    would refuse it, because no grant names it.
+    """
+    return [
+        ToolGrant(
+            tenant_id=tenant_id,
+            tool=tool.name,
+            allowed_agents=tuple(sorted(tool.allowed_agents)),
+            allowed_kinds=tuple(sorted(kind.value for kind in tool.allowed_kinds)),
+            timeout_seconds=tool.timeout_seconds or 20.0,
+        )
+        for tool in tools
+    ]
+
+
 def provision(
     policy: PolicyStore,
     tenant: TenantPolicy,
     grants: tuple[str, ...] | None = None,
+    tools: list[ToolSpec] | None = None,
 ) -> TenantPolicy:
-    """Create a tenant and install its tool grants."""
+    """Create a tenant and install its tool grants.
+
+    With `tools`, grants are derived from that registry - which is how a domain
+    pack's own tools become reachable. Otherwise the built-in demo grants apply.
+    """
     policy.upsert_tenant(tenant)
+    if tools is not None:
+        for grant in grants_from_tools(tenant.tenant_id, tools):
+            if grants is not None and grant.tool not in set(grants):
+                continue
+            policy.upsert_grant(grant)
+        return tenant
+
     wanted = set(grants) if grants is not None else None
     for tool, agents, kinds in DEFAULT_GRANTS:
         if wanted is not None and tool not in wanted:

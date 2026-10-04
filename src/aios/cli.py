@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -392,6 +393,129 @@ def worker(
         runner.run_forever()
     except KeyboardInterrupt:
         console.print(f"\n{worker_id} stopped after {runner.stats.leased} run(s)")
+
+
+# --- domain packs: pointing the engine at your own data ----------------------
+
+domain_app = typer.Typer(
+    no_args_is_help=True,
+    help="Describe your own data so runs use it instead of the demo fixtures.",
+)
+app.add_typer(domain_app, name="domain")
+
+DEFAULT_PACK = Path("domain.toml")
+
+
+def _pack_path(file: Path | None) -> Path:
+    settings = _settings()
+    return file or settings.domain_file or DEFAULT_PACK
+
+
+@domain_app.command("init")
+def domain_init(
+    name: Annotated[str, typer.Argument(help="A short name for this domain.")],
+    file: Annotated[Path, typer.Option(help="Where to write the pack.")] = DEFAULT_PACK,
+) -> None:
+    """Write a starter domain pack to edit."""
+    from aios.domain import scaffold
+
+    if file.exists():
+        console.print(f"[red]{file} already exists[/red]; delete it or choose --file")
+        raise typer.Exit(code=1)
+    scaffold(name, file)
+    console.print(f"wrote {file}")
+    console.print("\nNext: point [bold]data_source[/bold] and [bold]documents[/bold] "
+                  "at your files, then run:")
+    console.print(f"  aios domain check --file {file}")
+
+
+@domain_app.command("check")
+def domain_check(
+    file: Annotated[Path | None, typer.Option(help="Pack to validate.")] = None,
+) -> None:
+    """Validate a domain pack and show what the agents would see."""
+    from aios.domain import DomainPack
+    from aios.files import inventory
+
+    path = _pack_path(file)
+    try:
+        pack = DomainPack.load(path)
+    except Exception as error:
+        console.print(f"[red]{path}: {error}[/red]")
+        raise typer.Exit(code=1) from error
+
+    console.print(f"[bold]{pack.name}[/bold] — {pack.description or 'no description'}")
+    problems = pack.check()
+
+    if pack.data_source is not None:
+        source = pack.data_source
+        detail = source.path if source.kind == "files" else source.dsn
+        console.print(f"data:      {source.kind} [dim]{detail}[/dim]")
+        if source.kind == "files" and Path(source.path).exists():
+            found = inventory(Path(source.path))
+            console.print(
+                f"           {len(found['tabular'])} spreadsheet(s), "
+                f"{len(found['documents'])} document(s), "
+                f"{len(found['ignored'])} ignored"
+            )
+        if source.allow_adhoc_queries:
+            console.print("           [yellow]ad-hoc SQL enabled[/yellow] "
+                          "[dim](ingested copy only)[/dim]")
+    if pack.documents is not None:
+        console.print(f"documents: {pack.documents.path} [dim]{pack.documents.glob}[/dim]")
+
+    table = Table(title="Named queries", header_style="bold", expand=True)
+    table.add_column("name", no_wrap=True)
+    table.add_column("params", no_wrap=True)
+    table.add_column("description")
+    for name, query in sorted(pack.queries.items()):
+        table.add_row(name, ", ".join(query.params) or "-", query.description)
+    if pack.queries:
+        console.print(table)
+
+    if problems:
+        console.print("\n[red]Problems[/red]")
+        for problem in problems:
+            console.print(f"  - {problem}")
+        raise typer.Exit(code=1)
+    console.print("\n[green]pack is usable[/green]")
+
+
+@domain_app.command("add")
+def domain_add(
+    paths: Annotated[list[Path], typer.Argument(help="Files or folders to copy in.")],
+    file: Annotated[Path | None, typer.Option(help="Pack to add them to.")] = None,
+    into: Annotated[
+        str, typer.Option(help="Which source: data or documents.")
+    ] = "data",
+) -> None:
+    """Copy files into a pack's folder so the agents can reach them."""
+    import shutil
+
+    from aios.domain import DomainPack
+    from aios.files import READABLE
+
+    pack = DomainPack.load(_pack_path(file))
+    source = pack.data_source if into == "data" else pack.documents
+    if source is None or not getattr(source, "path", ""):
+        console.print(f"[red]the pack has no folder-based '{into}' source[/red]")
+        raise typer.Exit(code=1)
+
+    target = Path(source.path)
+    target.mkdir(parents=True, exist_ok=True)
+    copied, skipped = 0, 0
+    for origin in paths:
+        candidates = (
+            [p for p in origin.rglob("*") if p.is_file()] if origin.is_dir() else [origin]
+        )
+        for candidate in candidates:
+            if candidate.suffix.lower() not in READABLE:
+                skipped += 1
+                continue
+            shutil.copy2(candidate, target / candidate.name)
+            copied += 1
+    console.print(f"copied {copied} file(s) into {target}"
+                  + (f", skipped {skipped} unreadable" if skipped else ""))
 
 
 if __name__ == "__main__":
