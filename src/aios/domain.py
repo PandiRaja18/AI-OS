@@ -228,6 +228,69 @@ def scaffold(name: str, path: Path) -> Path:
     return path
 
 
+def scaffold_from_folder(name: str, path: Path, folder: Path, workspace: Path) -> Path:
+    """Write a pack that already knows the tables and columns in `folder`.
+
+    Writing SQL for your own spreadsheets is the friction that stops people
+    getting to a first run, so this inspects the files and fills in the real
+    names, plus one starter query per table.
+    """
+    from aios.files import ingest_folder, inventory
+
+    found = inventory(folder)
+    ingested = ingest_folder(folder, workspace / "ingested" / f"{name}-scaffold.db")
+
+    lines = [
+        f"# Domain pack for \"{name}\", generated from {folder}.",
+        "#",
+        f"# Found {len(found['tabular'])} spreadsheet(s), "
+        f"{len(found['documents'])} document(s), "
+        f"{len(found['ignored'])} ignored file(s).",
+        "# Edit the queries below to ask the questions your review actually needs.",
+        "",
+        f'name = "{name}"',
+        'description = "What this domain is for, in one line."',
+        "",
+        "[capabilities]",
+        'research = "the documents in this folder"',
+        'data = "the spreadsheets in this folder, via describe_schema and named queries"',
+        'reporting = "synthesis of the other agents\' results into a reviewable document"',
+        "",
+        "[data_source]",
+        'kind = "files"',
+        f'path = "{folder.as_posix()}"',
+        "# Ad-hoc SELECT runs against an ingested copy, never your files.",
+        "allow_adhoc_queries = true",
+        "",
+        "[documents]",
+        f'path = "{folder.as_posix()}"',
+        "",
+    ]
+
+    if not ingested.tables:
+        lines += [
+            "# No spreadsheets were found, so there are no queries to start from.",
+            "# Add .csv or .xlsx files and re-run: aios domain init --from-folder",
+        ]
+    for table in ingested.tables:
+        columns = ", ".join(table.columns)
+        lines += [
+            f"# {table.source}: {table.rows} row(s), columns: {columns}",
+            f"[queries.all_{table.name}]",
+            f'description = "Rows from {table.source}, most recent first"',
+            'params = ["limit"]',
+            'sql = """',
+            f"SELECT {columns}",
+            f"FROM {table.name}",
+            "LIMIT :limit",
+            '"""',
+            "",
+        ]
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
 def load_pack(settings) -> DomainPack | None:
     """The domain pack this deployment is configured for, if any."""
     if settings.domain_file is None:

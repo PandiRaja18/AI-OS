@@ -43,9 +43,22 @@ Note the sequence numbers run 1 → 74 unbroken across the pause. `signoff_reque
 
 ```bash
 python -m pip install -e .
-aios seed
-aios run "Prepare the FY26-Q3 quarterly audit review" --offline
+python scripts/start.py demo
 ```
+
+No API key, no model, no setup: it replays recorded answers against the real
+engine, prints every step, and ends with the report and what it chose to
+remember.
+
+Then point it at your own files:
+
+```bash
+python scripts/start.py mine --folder C:/work/my-files
+```
+
+It inspects the folder, writes a domain pack that already knows your tables and
+columns, checks your local model, and runs. See
+[docs/your-own-data.md](docs/your-own-data.md).
 
 `--offline` replays recorded model responses, so it needs **no API key** and produces
 the same trace every time. The graph, scheduler, agents, gateway, tools, memory and

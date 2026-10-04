@@ -415,17 +415,35 @@ def _pack_path(file: Path | None) -> Path:
 def domain_init(
     name: Annotated[str, typer.Argument(help="A short name for this domain.")],
     file: Annotated[Path, typer.Option(help="Where to write the pack.")] = DEFAULT_PACK,
+    from_folder: Annotated[
+        Path | None,
+        typer.Option("--from-folder", help="Inspect this folder and fill the pack in."),
+    ] = None,
 ) -> None:
-    """Write a starter domain pack to edit."""
-    from aios.domain import scaffold
+    """Write a domain pack, optionally generated from a folder of your files."""
+    from aios.domain import scaffold, scaffold_from_folder
 
     if file.exists():
         console.print(f"[red]{file} already exists[/red]; delete it or choose --file")
         raise typer.Exit(code=1)
-    scaffold(name, file)
-    console.print(f"wrote {file}")
-    console.print("\nNext: point [bold]data_source[/bold] and [bold]documents[/bold] "
-                  "at your files, then run:")
+
+    if from_folder is None:
+        scaffold(name, file)
+        console.print(f"wrote {file}")
+        console.print("\nNext: point [bold]data_source[/bold] and "
+                      "[bold]documents[/bold] at your files, then run:")
+        console.print(f"  aios domain check --file {file}")
+        return
+
+    if not from_folder.exists():
+        console.print(f"[red]no folder at {from_folder}[/red]")
+        raise typer.Exit(code=1)
+    settings = _settings()
+    settings.ensure_dirs()
+    scaffold_from_folder(name, file, from_folder, settings.workspace)
+    console.print(f"wrote {file} from {from_folder}")
+    console.print("\nIt already knows your tables and columns. Review the "
+                  "queries, then run:")
     console.print(f"  aios domain check --file {file}")
 
 
