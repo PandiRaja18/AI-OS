@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -94,7 +95,7 @@ def _task_table(tasks: dict[str, Task]) -> Table:
 
 
 def _elide(text: str, width: int = 160) -> str:
-    return text if len(text) <= width else text[: width - 1] + "…"
+    return text if len(text) <= width else text[: width - 1] + "..."
 
 
 def _report_outcome(outcome: RunOutcome) -> None:
@@ -392,6 +393,244 @@ def worker(
         runner.run_forever()
     except KeyboardInterrupt:
         console.print(f"\n{worker_id} stopped after {runner.stats.leased} run(s)")
+
+
+@app.command()
+def use(
+    folder: Annotated[
+        Path | None, typer.Argument(help="Folder holding your files.")
+    ] = None,
+    demo: Annotated[
+        bool, typer.Option("--demo", help="Go back to the built-in demo data.")
+    ] = False,
+    name: Annotated[str | None, typer.Option(help="Name for this domain.")] = None,
+    tenant: Annotated[str, typer.Option(help="Tenant to grant the tools to.")] = "me",
+    reviewer: Annotated[str, typer.Option(help="Who signs runs off.")] = "me",
+    force: Annotated[
+        bool, typer.Option("--force", help="Regenerate an existing pack.")
+    ] = False,
+) -> None:
+    """Point everything at a folder of your files. One command, then `aios serve`.
+
+    Inspects the folder, writes a domain pack for it, records it as the active
+    domain, and grants your tenant the tools that domain publishes.
+    """
+    from aios.config import write_active_domain
+    from aios.domain import DomainPack, scaffold_from_folder
+    from aios.files import inventory
+    from aios.platform import Platform, TenantPolicy
+
+    settings = Settings()
+    settings.ensure_dirs()
+
+    if demo:
+        write_active_domain(settings.workspace, None)
+        platform = Platform(Settings())
+        platform.provision_tenant(
+            TenantPolicy(tenant_id=tenant, name=tenant, reviewers=(reviewer,)),
+            from_domain=False,
+        )
+        console.print("[bold]using the built-in demo data[/bold]")
+        console.print("  run [bold]aios seed[/bold] if you have not already, "
+                      "then [bold]aios serve[/bold]")
+        return
+
+    if folder is None:
+        current = settings.domain_file
+        if current is None:
+            console.print("using the built-in [bold]demo[/bold] data")
+        else:
+            console.print(f"using [bold]{DomainPack.load(current).name}[/bold] "
+                          f"[dim]{current}[/dim]")
+        console.print("\npass a folder to switch: [bold]aios use C:/work/my-files[/bold]")
+        return
+
+    folder = folder.resolve()
+    if not folder.exists():
+        console.print(f"[red]no folder at {folder}[/red]")
+        raise typer.Exit(code=1)
+
+    found = inventory(folder)
+    if not found["tabular"] and not found["documents"]:
+        console.print(f"[red]nothing readable in {folder}[/red]")
+        console.print("  data:      .csv .tsv .xlsx")
+        console.print("  documents: .md .txt .pdf .docx")
+        raise typer.Exit(code=1)
+
+    domain_name = name or folder.name.replace(" ", "-").lower() or "mydomain"
+    pack_path = settings.workspace / "domains" / f"{domain_name}.toml"
+    pack_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if pack_path.exists() and not force:
+        console.print(f"[dim]keeping your edits in {pack_path}[/dim]")
+    else:
+        pack_path.unlink(missing_ok=True)
+        scaffold_from_folder(domain_name, pack_path, folder, settings.workspace)
+
+    pack = DomainPack.load(pack_path)
+    problems = pack.check()
+    for problem in problems:
+        console.print(f"[red]{problem}[/red]")
+    if problems:
+        raise typer.Exit(code=1)
+
+    write_active_domain(settings.workspace, pack_path)
+    platform = Platform(Settings())
+    platform.provision_tenant(
+        TenantPolicy(tenant_id=tenant, name=tenant, reviewers=(reviewer,))
+    )
+    granted = [grant.tool for grant in platform.policy.grants(tenant)]
+
+    console.print(f"[bold]{domain_name}[/bold] is now active")
+    console.print(f"  files:  {len(found['tabular'])} spreadsheet(s), "
+                  f"{len(found['documents'])} document(s)"
+                  + (f", {len(found['ignored'])} ignored" if found["ignored"] else ""))
+    console.print(f"  tools:  {', '.join(granted)}")
+    console.print(f"  tenant: {tenant}, reviewer {reviewer}")
+    console.print(f"  pack:   {pack_path} [dim](edit to tune queries and prompts)[/dim]")
+    console.print("\nNext: [bold]aios serve[/bold], then sign in as "
+                  f"[bold]{tenant}[/bold]")
+
+
+# --- domain packs: pointing the engine at your own data ----------------------
+
+domain_app = typer.Typer(
+    no_args_is_help=True,
+    help="Describe your own data so runs use it instead of the demo fixtures.",
+)
+app.add_typer(domain_app, name="domain")
+
+DEFAULT_PACK = Path("domain.toml")
+
+
+def _pack_path(file: Path | None) -> Path:
+    settings = _settings()
+    return file or settings.domain_file or DEFAULT_PACK
+
+
+@domain_app.command("init")
+def domain_init(
+    name: Annotated[str, typer.Argument(help="A short name for this domain.")],
+    file: Annotated[Path, typer.Option(help="Where to write the pack.")] = DEFAULT_PACK,
+    from_folder: Annotated[
+        Path | None,
+        typer.Option("--from-folder", help="Inspect this folder and fill the pack in."),
+    ] = None,
+) -> None:
+    """Write a domain pack, optionally generated from a folder of your files."""
+    from aios.domain import scaffold, scaffold_from_folder
+
+    if file.exists():
+        console.print(f"[red]{file} already exists[/red]; delete it or choose --file")
+        raise typer.Exit(code=1)
+
+    if from_folder is None:
+        scaffold(name, file)
+        console.print(f"wrote {file}")
+        console.print("\nNext: point [bold]data_source[/bold] and "
+                      "[bold]documents[/bold] at your files, then run:")
+        console.print(f"  aios domain check --file {file}")
+        return
+
+    if not from_folder.exists():
+        console.print(f"[red]no folder at {from_folder}[/red]")
+        raise typer.Exit(code=1)
+    settings = _settings()
+    settings.ensure_dirs()
+    scaffold_from_folder(name, file, from_folder, settings.workspace)
+    console.print(f"wrote {file} from {from_folder}")
+    console.print("\nIt already knows your tables and columns. Review the "
+                  "queries, then run:")
+    console.print(f"  aios domain check --file {file}")
+
+
+@domain_app.command("check")
+def domain_check(
+    file: Annotated[Path | None, typer.Option(help="Pack to validate.")] = None,
+) -> None:
+    """Validate a domain pack and show what the agents would see."""
+    from aios.domain import DomainPack
+    from aios.files import inventory
+
+    path = _pack_path(file)
+    try:
+        pack = DomainPack.load(path)
+    except Exception as error:
+        console.print(f"[red]{path}: {error}[/red]")
+        raise typer.Exit(code=1) from error
+
+    console.print(f"[bold]{pack.name}[/bold] - {pack.description or 'no description'}")
+    problems = pack.check()
+
+    if pack.data_source is not None:
+        source = pack.data_source
+        detail = source.path if source.kind == "files" else source.dsn
+        console.print(f"data:      {source.kind} [dim]{detail}[/dim]")
+        if source.kind == "files" and Path(source.path).exists():
+            found = inventory(Path(source.path))
+            console.print(
+                f"           {len(found['tabular'])} spreadsheet(s), "
+                f"{len(found['documents'])} document(s), "
+                f"{len(found['ignored'])} ignored"
+            )
+        if source.allow_adhoc_queries:
+            console.print("           [yellow]ad-hoc SQL enabled[/yellow] "
+                          "[dim](ingested copy only)[/dim]")
+    if pack.documents is not None:
+        console.print(f"documents: {pack.documents.path} [dim]{pack.documents.glob}[/dim]")
+
+    table = Table(title="Named queries", header_style="bold", expand=True)
+    table.add_column("name", no_wrap=True)
+    table.add_column("params", no_wrap=True)
+    table.add_column("description")
+    for name, query in sorted(pack.queries.items()):
+        table.add_row(name, ", ".join(query.params) or "-", query.description)
+    if pack.queries:
+        console.print(table)
+
+    if problems:
+        console.print("\n[red]Problems[/red]")
+        for problem in problems:
+            console.print(f"  - {problem}")
+        raise typer.Exit(code=1)
+    console.print("\n[green]pack is usable[/green]")
+
+
+@domain_app.command("add")
+def domain_add(
+    paths: Annotated[list[Path], typer.Argument(help="Files or folders to copy in.")],
+    file: Annotated[Path | None, typer.Option(help="Pack to add them to.")] = None,
+    into: Annotated[
+        str, typer.Option(help="Which source: data or documents.")
+    ] = "data",
+) -> None:
+    """Copy files into a pack's folder so the agents can reach them."""
+    import shutil
+
+    from aios.domain import DomainPack
+    from aios.files import READABLE
+
+    pack = DomainPack.load(_pack_path(file))
+    source = pack.data_source if into == "data" else pack.documents
+    if source is None or not getattr(source, "path", ""):
+        console.print(f"[red]the pack has no folder-based '{into}' source[/red]")
+        raise typer.Exit(code=1)
+
+    target = Path(source.path)
+    target.mkdir(parents=True, exist_ok=True)
+    copied, skipped = 0, 0
+    for origin in paths:
+        candidates = (
+            [p for p in origin.rglob("*") if p.is_file()] if origin.is_dir() else [origin]
+        )
+        for candidate in candidates:
+            if candidate.suffix.lower() not in READABLE:
+                skipped += 1
+                continue
+            shutil.copy2(candidate, target / candidate.name)
+            copied += 1
+    console.print(f"copied {copied} file(s) into {target}"
+                  + (f", skipped {skipped} unreadable" if skipped else ""))
 
 
 if __name__ == "__main__":

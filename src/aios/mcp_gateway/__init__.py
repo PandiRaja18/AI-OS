@@ -7,6 +7,7 @@ from aios.mcp_gateway.gateway import (
     ToolTimeout,
 )
 from aios.mcp_gateway.registry import Principal, PrincipalKind, ToolSpec
+from aios.mcp_gateway.run_tools import build_run_tools
 
 __all__ = [
     "McpGateway",
@@ -16,4 +17,5 @@ __all__ = [
     "ToolError",
     "ToolSpec",
     "ToolTimeout",
+    "build_run_tools",
 ]

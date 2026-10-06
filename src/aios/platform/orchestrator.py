@@ -19,14 +19,15 @@ from langgraph.types import Command
 
 from aios.agents import build_agents
 from aios.config import Settings
+from aios.domain import load_pack
 from aios.llm import LlmClient
-from aios.mcp_gateway import McpGateway
-from aios.mcp_gateway.tools import build_tools, report_markdown
+from aios.mcp_gateway import McpGateway, build_run_tools
+from aios.mcp_gateway.tools import report_markdown
 from aios.memory import checkpointer
 from aios.observability import EventKind, TraceStore
 from aios.orchestration.coordinator import Coordinator, RetryPolicy
 from aios.orchestration.graph import Deps, build_graph
-from aios.orchestration.planner import Planner
+from aios.orchestration.planner import Planner, build_system_prompt
 from aios.orchestration.state import (
     Claim,
     ConflictStatus,
@@ -186,8 +187,9 @@ class Orchestrator:
                 report_markdown(title, list(sections)),
             )
 
+        pack = load_pack(settings)
         tools = apply_grants(
-            build_tools(settings, record.run_id, report_writer=write_report),
+            build_run_tools(settings, record.run_id, write_report, pack),
             self._policy.grants(record.tenant_id),
         )
         gateway = McpGateway(tools, trace, settings.tool_timeout_seconds)
@@ -202,9 +204,23 @@ class Orchestrator:
             settings=settings,
             trace=trace,
             llm=llm,
-            planner=Planner(llm, trace, settings.max_plan_attempts),
+            planner=Planner(
+                llm,
+                trace,
+                settings.max_plan_attempts,
+                system_prompt=(
+                    build_system_prompt(pack.capabilities.model_dump())
+                    if pack
+                    else None
+                ),
+            ),
             coordinator=coordinator,
-            agents=build_agents(llm, gateway, trace),
+            agents=build_agents(
+                llm,
+                gateway,
+                trace,
+                pack.prompts.model_dump(exclude_none=True) if pack else None,
+            ),
             gateway=gateway,
             memory=TenantMemory(self._facts, record.tenant_id),
             on_attempt=self._attempt_recorder(record),

@@ -19,13 +19,24 @@ AGENT_CLASSES: tuple[type[Agent], ...] = (
 
 
 def build_agents(
-    llm: LlmClient, gateway: McpGateway, trace: TraceStore
+    llm: LlmClient,
+    gateway: McpGateway,
+    trace: TraceStore,
+    prompts: dict[str, str] | None = None,
 ) -> dict[AgentType, Agent]:
-    """Instantiate one agent per worker type."""
-    return {
-        agent_class.agent_type: agent_class(llm, gateway, trace)
-        for agent_class in AGENT_CLASSES
-    }
+    """Instantiate one agent per worker type.
+
+    `prompts` replaces an agent's role description for this run, which is how a
+    domain pack retargets the agents without subclassing them.
+    """
+    agents: dict[AgentType, Agent] = {}
+    for agent_class in AGENT_CLASSES:
+        agent = agent_class(llm, gateway, trace)
+        override = (prompts or {}).get(agent.agent_type.value)
+        if override:
+            agent.role_prompt = override
+        agents[agent.agent_type] = agent
+    return agents
 
 
 __all__ = [

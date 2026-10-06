@@ -19,6 +19,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from aios.observability import build_run_view
 from aios.platform.models import (
     Lane,
     Principal,
@@ -147,6 +148,14 @@ def create_app(platform: Platform, allow_dev_tokens: bool = True) -> FastAPI:
             )
         ]
 
+    @app.get("/v1/runs/{run_id}/view")
+    def run_view(run_id: str, caller: Caller) -> dict[str, Any]:
+        """The run as a task graph, rebuilt from its trace."""
+        if platform.runs.get(run_id, caller.tenant_id) is None:
+            raise HTTPException(404, "no such run")
+        events = platform.trace.query(caller.tenant_id, run_id, limit=2000)
+        return build_run_view(run_id, events).model_dump(mode="json")
+
     @app.get("/v1/runs/{run_id}/stream")
     def stream(run_id: str, caller: Caller, since_seq: int = 0) -> StreamingResponse:
         """Server-sent events, so the console follows a run as it happens."""
@@ -217,6 +226,7 @@ def create_app(platform: Platform, allow_dev_tokens: bool = True) -> FastAPI:
         runs = platform.runs.list(caller.tenant_id, limit=200)
         completed = [r for r in runs if r.status is RunStatus.COMPLETED]
         return {
+            "domain": platform.active_domain(),
             "queue_depth": platform.queue.depth(caller.tenant_id),
             "runs_total": len(runs),
             "runs_by_status": {
@@ -256,7 +266,11 @@ def create_app(platform: Platform, allow_dev_tokens: bool = True) -> FastAPI:
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
-        return {"ok": True, "queue_depth": platform.queue.depth()}
+        return {
+            "ok": True,
+            "queue_depth": platform.queue.depth(),
+            "domain": platform.active_domain(),
+        }
 
     # --- dev conveniences -----------------------------------------------------
 

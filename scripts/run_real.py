@@ -21,7 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from aios.config import Settings  # noqa: E402
 from aios.llm import LlmError  # noqa: E402
 from aios.llm_local import LocalLlmClient  # noqa: E402
-from aios.mcp_gateway.tools import NAMED_QUERIES, build_tools  # noqa: E402
+from aios.domain import DomainPack, load_pack  # noqa: E402
+from aios.files import inventory  # noqa: E402
+from aios.mcp_gateway import build_run_tools  # noqa: E402
 from aios.observability import TraceStore  # noqa: E402
 from aios.orchestration.state import Signoff  # noqa: E402
 from aios.platform import Platform, TenantPolicy  # noqa: E402
@@ -78,35 +80,67 @@ class Preflight:
         else:
             self.ok("no tools forced offline")
 
-        registered = {tool.name for tool in build_tools(settings, "preflight")}
+        pack = self._check_pack()
+        registered = {
+            tool.name for tool in build_run_tools(settings, "preflight", pack=pack)
+        }
         leftover = registered & DEMO_TOOLS
         if leftover:
             self.warn(
                 f"demo tools still registered: {', '.join(sorted(leftover))}",
-                "replace them with real connectors or drop them",
+                "configure a domain pack with --domain, or drop them",
             )
         else:
-            self.ok("no demo tools registered")
-
-        if settings.demo_db.exists() and "demo" in str(settings.demo_db):
-            self.warn(
-                f"sql_query still points at the demo database ({settings.demo_db})",
-                "repoint it at your warehouse, read-only",
-            )
-        self.ok(f"{len(NAMED_QUERIES)} named quer(y/ies) registered", ", ".join(NAMED_QUERIES))
-
-        if not settings.policy_dir.exists() or not any(settings.policy_dir.glob("*.md")):
-            self.block(
-                f"no documents at {settings.policy_dir}",
-                "point doc_search at your corpus",
-            )
-        else:
-            count = len(list(settings.policy_dir.glob("*.md")))
-            self.ok(f"{count} document(s) in the corpus", str(settings.policy_dir))
+            self.ok("tools", ", ".join(sorted(registered)))
 
         self._check_model()
         print()
         return not self.blockers
+
+    def _check_pack(self) -> DomainPack | None:
+        """Validate the configured domain pack, or say the demo is still in play."""
+        settings = self.settings
+        if settings.domain_file is None:
+            self.warn(
+                "no domain pack configured: this run would use the audit demo",
+                "aios domain init <name>, then --domain <file>",
+            )
+            if not settings.policy_dir.exists():
+                self.block(
+                    f"no documents at {settings.policy_dir}", "run `aios seed`"
+                )
+            return None
+
+        try:
+            pack = DomainPack.load(settings.domain_file)
+        except Exception as error:
+            self.block(f"domain pack unusable: {settings.domain_file}", str(error)[:200])
+            return None
+
+        problems = pack.check()
+        for problem in problems:
+            self.block(f"domain pack: {problem}", "aios domain check")
+        if problems:
+            return pack
+
+        source = pack.data_source
+        if source is not None and source.kind == "files":
+            found = inventory(Path(source.path))
+            self.ok(
+                f"domain '{pack.name}' reads a folder",
+                f"{len(found['tabular'])} spreadsheet(s), "
+                f"{len(found['documents'])} document(s) in {source.path}",
+            )
+            if source.allow_adhoc_queries:
+                self.warn(
+                    "ad-hoc SQL is enabled",
+                    "safe here: it runs against the ingested copy, not your files",
+                )
+        elif source is not None:
+            self.ok(f"domain '{pack.name}' reads {source.kind}", source.dsn)
+        if pack.queries:
+            self.ok(f"{len(pack.queries)} named quer(y/ies)", ", ".join(pack.queries))
+        return pack
 
     def _check_model(self) -> None:
         settings = self.settings
@@ -147,6 +181,8 @@ def build_settings(args) -> Settings:
     see the configuration the operator actually has, or it is checking itself.
     """
     overrides: dict = {}
+    if args.domain:
+        overrides["domain_file"] = Path(args.domain)
     if args.local:
         overrides["llm_provider"] = "local"
     if args.base_url:
@@ -167,6 +203,7 @@ def main() -> int:
     parser.add_argument("--tenant", default="acme")
     parser.add_argument("--reviewer", default="reviewer")
     parser.add_argument("--submitter", default="operator")
+    parser.add_argument("--domain", help="path to a domain pack (domain.toml)")
     parser.add_argument("--local", action="store_true", help="use the self-hosted model")
     parser.add_argument("--base-url", help="e.g. http://localhost:11434")
     parser.add_argument("--model", help="e.g. qwen2.5:32b-instruct")

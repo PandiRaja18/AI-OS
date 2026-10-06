@@ -85,8 +85,48 @@ class Platform:
 
     # --- provisioning ---------------------------------------------------------
 
-    def provision_tenant(self, tenant: TenantPolicy) -> TenantPolicy:
-        return provision(self.policy, tenant)
+    def provision_tenant(
+        self, tenant: TenantPolicy, from_domain: bool = True
+    ) -> TenantPolicy:
+        """Create a tenant, granting the tools its configured domain publishes.
+
+        Grants left over from a previous domain are revoked. Switching domains
+        otherwise accumulates grants for tools that no longer exist, which makes
+        the stored policy a misleading record of what a tenant can reach.
+        """
+        tools = None
+        if from_domain and self.settings.domain_file is not None:
+            from aios.domain import load_pack
+            from aios.mcp_gateway import build_run_tools
+
+            tools = build_run_tools(
+                self.settings, "provisioning", pack=load_pack(self.settings)
+            )
+
+        policy = provision(self.policy, tenant, tools=tools)
+        if tools is not None:
+            published = {tool.name for tool in tools}
+            for grant in self.policy.grants(tenant.tenant_id):
+                if grant.tool not in published:
+                    self.policy.revoke_grant(tenant.tenant_id, grant.tool)
+        return policy
+
+    def active_domain(self) -> dict[str, object]:
+        """Which data a run would use, for the API and the console header."""
+        if self.settings.domain_file is None:
+            return {"name": "demo", "is_demo": True, "pack": None, "tools": []}
+
+        from aios.domain import load_pack
+        from aios.mcp_gateway import build_run_tools
+
+        pack = load_pack(self.settings)
+        tools = build_run_tools(self.settings, "inspect", pack=pack)
+        return {
+            "name": pack.name,
+            "is_demo": False,
+            "pack": str(self.settings.domain_file),
+            "tools": sorted(tool.name for tool in tools),
+        }
 
     def token_for(
         self,

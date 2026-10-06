@@ -94,7 +94,7 @@ def render(events: list[dict]) -> str:
         colour = STORY[event["kind"]][0]
         message = event["message"].replace("\n", " ")
         if len(message) > MESSAGE_CHARS:
-            message = message[: MESSAGE_CHARS - 1] + "…"
+            message = message[: MESSAGE_CHARS - 1] + "..."
         took = (
             f'<tspan x="{DURATION_X}" text-anchor="end" fill="#484f58">'
             f'{event["duration_ms"]}ms</tspan>'

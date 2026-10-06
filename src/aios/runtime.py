@@ -18,14 +18,14 @@ from langgraph.types import Command
 
 from aios.agents import build_agents
 from aios.config import Settings
+from aios.domain import load_pack
 from aios.llm import LlmClient
-from aios.mcp_gateway import McpGateway
-from aios.mcp_gateway.tools import build_tools
+from aios.mcp_gateway import McpGateway, build_run_tools
 from aios.memory import PromotionPolicy, RunIndex, SemanticMemory, checkpointer
 from aios.observability import EventKind, Listener, TraceStore
 from aios.orchestration.coordinator import Coordinator, RetryPolicy
 from aios.orchestration.graph import Deps, build_graph
-from aios.orchestration.planner import Planner
+from aios.orchestration.planner import Planner, build_system_prompt
 from aios.orchestration.state import RunStatus, Signoff, new_run_state
 from aios.providers import build_llm
 
@@ -100,8 +100,11 @@ class Runtime:
     def _build(self, run_id: str) -> tuple[Deps, TraceStore]:
         settings = self.settings
         trace = TraceStore(run_id, settings.trace_dir, self._listener)
+        pack = load_pack(settings)
         gateway = McpGateway(
-            build_tools(settings, run_id), trace, settings.tool_timeout_seconds
+            build_run_tools(settings, run_id, pack=pack),
+            trace,
+            settings.tool_timeout_seconds,
         )
         llm = self._llm(trace)
         coordinator = Coordinator(
@@ -114,9 +117,14 @@ class Runtime:
             settings=settings,
             trace=trace,
             llm=llm,
-            planner=Planner(llm, trace, settings.max_plan_attempts),
+            planner=Planner(
+                llm,
+                trace,
+                settings.max_plan_attempts,
+                system_prompt=_planner_prompt(pack),
+            ),
             coordinator=coordinator,
-            agents=build_agents(llm, gateway, trace),
+            agents=build_agents(llm, gateway, trace, _agent_prompts(pack)),
             gateway=gateway,
             memory=self.memory,
         )
@@ -155,6 +163,15 @@ class Runtime:
             pending_signoff=pending,
             trace_path=trace.path,
         )
+
+
+def _planner_prompt(pack) -> str | None:
+    """The planner's agent roster, from the domain pack if there is one."""
+    return build_system_prompt(pack.capabilities.model_dump()) if pack else None
+
+
+def _agent_prompts(pack) -> dict[str, str] | None:
+    return pack.prompts.model_dump(exclude_none=True) if pack else None
 
 
 def _new_run_id() -> str:

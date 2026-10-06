@@ -1,0 +1,17 @@
+Ticket ID,Team,Priority,Status,Age (days),Summary
+TKT-4101,Payments,urgent,open,31,Card charged twice on retry
+TKT-4102,Payments,urgent,open,22,Refund stuck in pending
+TKT-4116,Payments,urgent,open,8,Payout batch stuck overnight
+TKT-4103,Identity,urgent,open,19,Login loop after password reset
+TKT-4104,Identity,urgent,open,12,SSO session drops on mobile
+TKT-4105,Search,urgent,open,9,Empty results for exact match
+TKT-4106,Mobile,urgent,open,8,Crash on photo upload
+TKT-4107,Mobile,urgent,open,8,App freezes on checkout
+TKT-4108,Search,urgent,open,3,Slow autocomplete
+TKT-4109,Payments,urgent,closed,2,Invoice PDF missing
+TKT-4110,Mobile,normal,open,44,Dark mode contrast
+TKT-4111,Search,normal,open,36,Filters reset on back
+TKT-4112,Identity,normal,open,11,Avatar upload fails
+TKT-4113,Payments,normal,closed,5,Receipt email delayed
+TKT-4114,Mobile,low,open,61,Typo on settings screen
+TKT-4115,Search,low,closed,4,Sort order tooltip

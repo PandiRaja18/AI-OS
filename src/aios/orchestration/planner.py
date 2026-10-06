@@ -20,15 +20,13 @@ from aios.orchestration.state import (
     TaskStatus,
 )
 
-SYSTEM_PROMPT = """You are the Planner of a multi-agent orchestration platform.
+PROMPT_TEMPLATE = """You are the Planner of a multi-agent orchestration platform.
 
 You decompose one enterprise goal into a directed acyclic graph of tasks and
 assign each task to exactly one worker agent.
 
 Worker agents and what they can reach:
-- research: policy documents, prior audit memos, external benchmarks.
-- data: the transaction warehouse and the vendor ledger (named SQL queries).
-- reporting: synthesis of other agents' results into the final document.
+{capabilities}
 
 Rules:
 1. Between 4 and 8 tasks. Every task must be independently verifiable.
@@ -39,6 +37,29 @@ Rules:
 5. critical is false only for tasks the report can survive without.
 6. success_criteria states the observable condition that makes the task done.
 """
+
+DEFAULT_CAPABILITIES = {
+    "research": "policy documents, prior audit memos, external benchmarks.",
+    "data": "the transaction warehouse and the vendor ledger (named SQL queries).",
+    "reporting": "synthesis of other agents' results into the final document.",
+}
+
+
+def build_system_prompt(capabilities: dict[str, str] | None = None) -> str:
+    """The planner prompt, with the agent roster this deployment actually has.
+
+    A plan can only be as good as this description. If it claims an agent can
+    reach something it cannot, the planner writes tasks that are certain to fail.
+    """
+    roster = capabilities or DEFAULT_CAPABILITIES
+    return PROMPT_TEMPLATE.format(
+        capabilities="\n".join(
+            f"- {agent}: {reach}" for agent, reach in roster.items()
+        )
+    )
+
+
+SYSTEM_PROMPT = build_system_prompt()
 
 
 class InvalidPlan(ValueError):
@@ -131,10 +152,12 @@ class Planner:
         llm: LlmClient,
         trace: TraceStore,
         max_attempts: int = 3,
+        system_prompt: str | None = None,
     ) -> None:
         self._llm = llm
         self._trace = trace
         self._max_attempts = max_attempts
+        self._system_prompt = system_prompt or SYSTEM_PROMPT
 
     def plan(self, goal: str, precedents: list[str]) -> dict[str, Task]:
         """Produce the initial task graph."""
@@ -144,7 +167,7 @@ class Planner:
             EventKind.PLAN,
             f"{len(plan.tasks)} tasks: {plan.rationale}",
             actor=AgentType.PLANNER.value,
-            task_ids=[task.task_id for task in plan.tasks],
+            tasks=[_outline(task) for task in plan.tasks],
         )
         return {task.task_id: task.to_task() for task in plan.tasks}
 
@@ -163,6 +186,7 @@ class Planner:
             f"revision {revision}: {plan.rationale}",
             actor=AgentType.PLANNER.value,
             reason=reason,
+            tasks=[_outline(task) for task in plan.tasks],
         )
         return _merge_revision(tasks, plan, revision)
 
@@ -177,7 +201,7 @@ class Planner:
                     stage,
                     attempt=max(attempt, round_number),
                 ),
-                system=SYSTEM_PROMPT,
+                system=self._system_prompt,
                 prompt=prompt + feedback,
                 output_model=Plan,
                 actor=AgentType.PLANNER.value,
@@ -197,6 +221,18 @@ class Planner:
                     "Return a corrected plan."
                 )
         raise InvalidPlan(last_error)
+
+
+def _outline(task: PlannedTask) -> dict:
+    """Shape of a task for the trace, so a graph can be rebuilt from events."""
+    return {
+        "task_id": task.task_id,
+        "description": task.description,
+        "agent": task.agent.value,
+        "depends_on": list(task.depends_on),
+        "critical": task.critical,
+        "requires_signoff": task.requires_signoff,
+    }
 
 
 def _merge_revision(

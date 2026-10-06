@@ -625,7 +625,12 @@ AUDIT_OUTAGE: dict[str, Any] = {
     },
 }
 
+# The support desk is the headline demo because it needs no domain
+# knowledge; audit is kept because it shows more of the machinery.
+from aios.demo.support import SCENARIO as SUPPORT  # noqa: E402
+
 SCENARIOS: dict[str, dict[str, Any]] = {
+    "support": SUPPORT,
     "audit": AUDIT,
     "audit_outage": AUDIT_OUTAGE,
 }
