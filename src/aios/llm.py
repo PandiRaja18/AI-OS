@@ -21,6 +21,10 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 MAX_TOKENS = 8000
 
+# Extended thinking pins the sampling temperature, so a configured value
+# cannot reach this backend. Calls record what actually governed them.
+THINKING_TEMPERATURE = 1.0
+
 
 class Usage(BaseModel):
     """Tokens consumed by one call, when the client can report them."""
@@ -109,6 +113,8 @@ class ClaudeClient:
             task_id=task_id,
             duration_ms=int((time.perf_counter() - started) * 1000),
             model=self._model,
+            temperature=THINKING_TEMPERATURE,
+            seed=None,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
         )
@@ -151,6 +157,8 @@ class ReplayClient:
             task_id=task_id,
             duration_ms=int((time.perf_counter() - started) * 1000),
             model=self.name,
+            temperature=0.0,
+            seed=None,
         )
         return output_model.model_validate(payload)
 

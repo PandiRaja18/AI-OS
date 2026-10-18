@@ -16,7 +16,7 @@ import re
 from datetime import datetime, timezone
 from typing import Protocol
 
-from aios.memory.semantic import Fact, PromotionPolicy
+from aios.memory.semantic import ACTIVE_FACT, Fact, PromotionPolicy
 from aios.orchestration.state import Claim
 from aios.platform.models import new_id, now
 from aios.platform.sql.engine import Database, from_time, to_time
@@ -99,11 +99,14 @@ class SqlFactStore:
         return [fact for _, fact in scored[:limit]]
 
     def facts(self, tenant_id: str, include_superseded: bool = False) -> list[Fact]:
+        """This tenant's facts, newest first; current ones unless asked for all."""
         statement = "SELECT * FROM facts WHERE tenant_id = ?"
+        params: list = [tenant_id]
         if not include_superseded:
-            statement += " AND superseded_by IS NULL"
+            statement += f" AND {ACTIVE_FACT}"
+            params.append(to_time(now()))
         statement += " ORDER BY valid_from DESC"
-        return [_row_to_fact(row) for row in self._db.query(statement, (tenant_id,))]
+        return [_row_to_fact(row) for row in self._db.query(statement, tuple(params))]
 
     def history(self, tenant_id: str, subject: str, metric: str) -> list[Fact]:
         """Every version of one fact, newest first."""
@@ -118,14 +121,23 @@ class SqlFactStore:
         return [_row_to_fact(row) for row in rows]
 
     def as_of(self, tenant_id: str, moment: datetime) -> list[Fact]:
-        """What this tenant believed at a point in time."""
+        """What this tenant believed at a point in time.
+
+        Two windows have to hold at once. A fact was believed until its
+        replacement was written, and it asserted something that was true until
+        its own `valid_to`. Only the first is a correction.
+        """
+        when = to_time(moment)
         rows = self._db.query(
             """
-            SELECT * FROM facts
-            WHERE tenant_id = ? AND valid_from <= ?
-              AND (valid_to IS NULL OR valid_to > ?)
+            SELECT fact.* FROM facts AS fact
+            LEFT JOIN facts AS replacement
+                   ON replacement.fact_id = fact.superseded_by
+            WHERE fact.tenant_id = ? AND fact.valid_from <= ?
+              AND (fact.valid_to IS NULL OR fact.valid_to > ?)
+              AND (replacement.valid_from IS NULL OR replacement.valid_from > ?)
             """,
-            (tenant_id, to_time(moment), to_time(moment)),
+            (tenant_id, when, when, when),
         )
         return [_row_to_fact(row) for row in rows]
 
@@ -153,6 +165,7 @@ class SqlFactStore:
                 confidence=confidence,
                 provenance=run_id,
                 created_at=to_time(now()),
+                valid_to=claim.valid_to,
             )
             self._insert(tenant_id, fact)
             if existing is not None:
@@ -173,6 +186,7 @@ class SqlFactStore:
             confidence=confidence,
             provenance=provenance,
             created_at=to_time(now()),
+            valid_to=claim.valid_to,
         )
         self._insert(tenant_id, fact)
         self._vectors.add(tenant_id, fact)
@@ -182,11 +196,10 @@ class SqlFactStore:
         row = self._db.one(
             """
             SELECT * FROM facts
-            WHERE tenant_id = ? AND subject = ? AND metric = ?
-              AND superseded_by IS NULL
+            WHERE tenant_id = ? AND subject = ? AND metric = ? AND {active}
             ORDER BY valid_from DESC LIMIT 1
-            """,
-            (tenant_id, subject, metric),
+            """.format(active=ACTIVE_FACT),
+            (tenant_id, subject, metric, to_time(now())),
         )
         return _row_to_fact(row) if row else None
 
@@ -196,7 +209,7 @@ class SqlFactStore:
             INSERT INTO facts (
                 fact_id, tenant_id, subject, metric, value, confidence,
                 provenance_run, valid_from, valid_to, superseded_by
-            ) VALUES (?,?,?,?,?,?,?,?,NULL,NULL)
+            ) VALUES (?,?,?,?,?,?,?,?,?,NULL)
             """,
             (
                 fact.fact_id,
@@ -207,13 +220,20 @@ class SqlFactStore:
                 fact.confidence,
                 fact.provenance,
                 fact.created_at,
+                fact.valid_to,
             ),
         )
 
     def _supersede(self, old_fact_id: str, new_fact_id: str) -> None:
+        """Point a fact at the one that replaced it.
+
+        `valid_to` is untouched: a corrected fact was never true, so it did not
+        expire. Only the claim that asserted an expiry sets that column. The
+        replacement's `valid_from` is what ends the belief window `as_of` reads.
+        """
         self._db.execute(
-            "UPDATE facts SET superseded_by = ?, valid_to = ? WHERE fact_id = ?",
-            (new_fact_id, to_time(now()), old_fact_id),
+            "UPDATE facts SET superseded_by = ? WHERE fact_id = ?",
+            (new_fact_id, old_fact_id),
         )
 
 
@@ -226,6 +246,7 @@ def _row_to_fact(row: dict) -> Fact:
         confidence=row["confidence"],
         provenance=row["provenance_run"],
         created_at=str(row["valid_from"]),
+        valid_to=row["valid_to"],
         superseded_by=row["superseded_by"],
     )
 

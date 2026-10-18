@@ -91,6 +91,7 @@ class LocalLlmClient:
         timeout: float = DEFAULT_TIMEOUT,
         max_repairs: int = 2,
         temperature: float = 0.0,
+        seed: int | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
@@ -100,6 +101,7 @@ class LocalLlmClient:
         self._timeout = timeout
         self._max_repairs = max_repairs
         self._temperature = temperature
+        self._seed = seed
         # An injected client is how a deployment supplies a proxy, a private CA
         # bundle or mTLS - self-hosted inference often sits behind one of those.
         self._client = http_client or httpx.Client(
@@ -143,6 +145,8 @@ class LocalLlmClient:
                     task_id=task_id,
                     duration_ms=int((time.perf_counter() - started) * 1000),
                     model=self._model,
+                    temperature=self._temperature,
+                    seed=self._seed,
                     input_tokens=usage.input_tokens,
                     output_tokens=usage.output_tokens,
                     repairs=attempt - 1,
@@ -185,8 +189,13 @@ class LocalLlmClient:
                 ],
                 "format": schema,
                 "stream": False,
-                "options": {"temperature": self._temperature, "num_predict": MAX_TOKENS},
+                "options": {
+                    "temperature": self._temperature,
+                    "num_predict": MAX_TOKENS,
+                },
             }
+            if self._seed is not None:
+                body["options"]["seed"] = self._seed
         else:
             url = f"{self._base_url}/v1/chat/completions"
             body = {
@@ -206,6 +215,8 @@ class LocalLlmClient:
                 "temperature": self._temperature,
                 "max_tokens": MAX_TOKENS,
             }
+            if self._seed is not None:
+                body["seed"] = self._seed
 
         try:
             response = self._client.post(url, json=body)

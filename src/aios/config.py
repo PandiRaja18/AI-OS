@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 300.0
     llm_max_repairs: int = 2
 
+    # Sampling controls for the self-hosted backend, which accepts both. A run
+    # whose temperature and seed are unknown cannot be reproduced, so every
+    # call records the values that governed it. The hosted backend runs with
+    # extended thinking, which pins its own temperature and takes no seed.
+    temperature: float = 0.0
+    seed: int | None = None
+
     max_plan_attempts: int = 3
     max_task_attempts: int = 3
     retry_backoff_seconds: float = 0.25

@@ -59,5 +59,7 @@ def build_llm(
             api_key=settings.llm_api_key,
             timeout=settings.llm_timeout_seconds,
             max_repairs=settings.llm_max_repairs,
+            temperature=settings.temperature,
+            seed=settings.seed,
         )
     return ClaudeClient(settings.model, trace)

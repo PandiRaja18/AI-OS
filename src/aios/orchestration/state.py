@@ -50,11 +50,17 @@ class ConflictStatus(enum.StrEnum):
 
 
 class Claim(BaseModel):
-    """A single asserted fact. Conflict detection compares claims, not prose."""
+    """A single asserted fact. Conflict detection compares claims, not prose.
+
+    `valid_to` is set only when the thing asserted stops being true at a known
+    moment, as a dated document does. A figure that may later be corrected does
+    not expire, so it leaves this unset and supersession records the correction.
+    """
 
     subject: str
     metric: str
     value: str
+    valid_to: str | None = None
 
 
 class AgentResult(BaseModel):

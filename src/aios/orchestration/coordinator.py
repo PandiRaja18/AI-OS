@@ -190,7 +190,12 @@ class Coordinator:
     def resolution_target(
         self, conflict: Conflict, tasks: dict[str, Task]
     ) -> str | None:
-        """The claimant to re-query: the one that asserted with least confidence."""
+        """The claimant to re-query.
+
+        Lowest confidence first, then lowest task id. The second key matters:
+        confidences tie often, and a run that picks a different claimant each
+        time cannot be compared against another run.
+        """
         candidates = [
             tasks[task_id]
             for task_id in conflict.values
@@ -198,7 +203,9 @@ class Coordinator:
         ]
         if len(candidates) < 2:
             return None
-        weakest = min(candidates, key=lambda task: task.result.confidence)
+        weakest = min(
+            candidates, key=lambda task: (task.result.confidence, task.task_id)
+        )
         return weakest.task_id
 
     def escalate(self, conflict: Conflict) -> Conflict:

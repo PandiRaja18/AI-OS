@@ -21,6 +21,10 @@ from pydantic import BaseModel
 
 from aios.orchestration.state import Claim
 
+# A fact counts as current while nothing has replaced it and its own validity
+# period, if it declared one, has not run out.
+ACTIVE_FACT = "superseded_by IS NULL AND (valid_to IS NULL OR valid_to > ?)"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id       TEXT PRIMARY KEY,
@@ -30,6 +34,7 @@ CREATE TABLE IF NOT EXISTS facts (
     confidence    REAL NOT NULL,
     provenance    TEXT NOT NULL,
     created_at    TEXT NOT NULL,
+    valid_to      TEXT,
     superseded_by TEXT
 )
 """
@@ -45,6 +50,7 @@ class Fact(BaseModel):
     confidence: float
     provenance: str
     created_at: str
+    valid_to: str | None = None
     superseded_by: str | None = None
 
     def as_context(self) -> str:
@@ -72,6 +78,7 @@ class SemanticMemory:
         self.policy = policy or PromotionPolicy()
         with self._connect() as connection:
             connection.execute(_SCHEMA)
+            _add_missing_columns(connection)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._db_path)
@@ -91,11 +98,16 @@ class SemanticMemory:
         return [fact for _, fact in scored[:limit]]
 
     def facts(self, include_superseded: bool = False) -> list[Fact]:
-        """All facts, most recent first."""
-        clause = "" if include_superseded else "WHERE superseded_by IS NULL"
+        """Facts still believed, most recent first.
+
+        A fact leaves this set two ways: a later fact supersedes it, or its own
+        validity period ends.
+        """
+        clause = "" if include_superseded else f"WHERE {ACTIVE_FACT}"
         with self._connect() as connection:
             rows = connection.execute(
-                f"SELECT * FROM facts {clause} ORDER BY created_at DESC"
+                f"SELECT * FROM facts {clause} ORDER BY created_at DESC",
+                () if include_superseded else (_now(),),
             ).fetchall()
         return [Fact(**dict(row)) for row in rows]
 
@@ -123,6 +135,7 @@ class SemanticMemory:
                 confidence=confidence,
                 provenance=run_id,
                 created_at=_now(),
+                valid_to=claim.valid_to,
             )
             self._insert(fact)
             if existing is not None:
@@ -140,6 +153,7 @@ class SemanticMemory:
             confidence=confidence,
             provenance=provenance,
             created_at=_now(),
+            valid_to=claim.valid_to,
         )
         self._insert(fact)
         return fact
@@ -149,17 +163,22 @@ class SemanticMemory:
             row = connection.execute(
                 """
                 SELECT * FROM facts
-                WHERE subject = ? AND metric = ? AND superseded_by IS NULL
+                WHERE subject = ? AND metric = ? AND {active}
                 ORDER BY created_at DESC LIMIT 1
-                """,
-                (subject, metric),
+                """.format(active=ACTIVE_FACT),
+                (subject, metric, _now()),
             ).fetchone()
         return Fact(**dict(row)) if row else None
 
     def _insert(self, fact: Fact) -> None:
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO facts VALUES (?,?,?,?,?,?,?,?)",
+                """
+                INSERT INTO facts (
+                    fact_id, subject, metric, value, confidence, provenance,
+                    created_at, valid_to, superseded_by
+                ) VALUES (?,?,?,?,?,?,?,?,?)
+                """,
                 (
                     fact.fact_id,
                     fact.subject,
@@ -168,16 +187,29 @@ class SemanticMemory:
                     fact.confidence,
                     fact.provenance,
                     fact.created_at,
+                    fact.valid_to,
                     fact.superseded_by,
                 ),
             )
 
     def _supersede(self, old_fact_id: str, new_fact_id: str) -> None:
+        """Point a fact at the one that replaced it.
+
+        `valid_to` is untouched: a corrected fact was never true, so it did not
+        expire. Only the claim that asserted an expiry sets that column.
+        """
         with self._connect() as connection:
             connection.execute(
                 "UPDATE facts SET superseded_by = ? WHERE fact_id = ?",
                 (new_fact_id, old_fact_id),
             )
+
+
+def _add_missing_columns(connection: sqlite3.Connection) -> None:
+    """Widen a store written before `valid_to` existed."""
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(facts)")}
+    if "valid_to" not in columns:
+        connection.execute("ALTER TABLE facts ADD COLUMN valid_to TEXT")
 
 
 def _tokens(text: str) -> set[str]:
